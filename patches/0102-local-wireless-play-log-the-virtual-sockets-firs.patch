@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: exynos6694 <azsx6694@naver.com>
+Date: Mon, 9 Nov 2026 23:24:10 +0900
+Subject: [PATCH] Local wireless play: log the virtual sockets' first calls and
+ every socket call that fails
+
+Animal Crossing: New Horizons 3.0.3 hosting through the relay shows error 2618-0006 (its Pia network
+library's range) right after it binds its UDP socket on 12345 and reads the NetworkInfo twice. Every
+ldn call it makes succeeds, so the socket layer is next: with co-op on, the first three calls of each
+virtual-socket entry point log their result, later failures but EAGAIN log the errno (16 lines each),
+GetSockOpt and Fcntl log their arguments, and a socket call the host does not serve (sk_fail: Connect,
+Listen, Accept, GetPeerName, Shutdown, the resolver) logs its name (32 lines).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: pending
+Reason: Local wireless play: diagnostics for the socket calls a game's transport makes
+Issue: none yet (exynos6694/NX2Apple-muti feature/local-wireless)
+
+---
+ dm/host/hle_net.c | 29 +++++++++++++++++++++--------
+ 1 file changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/dm/host/hle_net.c b/dm/host/hle_net.c
+index 50e438a..17a81c8 100644
+--- a/dm/host/hle_net.c
++++ b/dm/host/hle_net.c
+@@ -37,7 +37,15 @@ HLE_FORCE("nnsslFinalize", "pairs with nnsslInitialize (cut)", Result, h_ssl_Fin
+ // Not cut: Inet* / nnsocketInet* byte order and address text conversion (pure computation).
+ #define SK_ENETDOWN 50                  // Horizon sockets use FreeBSD error codes
+ static __thread int t_skerr = SK_ENETDOWN;
+-static int sk_fail(void) { t_skerr = SK_ENETDOWN; return -1; }
++struct coop_node; struct coop_node *dm_coop(void);
++static int sk_coop_on(void) { return dm_coop() != NULL; }
++static int sk_fail_at(const char *what) {   // with co-op on, a socket call the host does not serve is worth a line: a game's local play may stop there
++    t_skerr = SK_ENETDOWN;
++    static _Atomic int lines;
++    if (sk_coop_on() && atomic_fetch_add(&lines, 1) < 32) LOG("[coop] sock: %s is not served: -1 / ENETDOWN", what + (what[0] == 'h' && what[1] == '_' ? 2 : 0));
++    return -1;
++}
++#define sk_fail() sk_fail_at(__func__)
+ // Local wireless play (DM_COOP, hle_coop_*.c): with co-op on, the AF_INET datagram sockets a game makes while nn::ldn is initialized are the coop module's
+ // virtual sockets (descriptors 0x100 and up on 169.254.S.0/24, hle_coop_vnet.c). Every other descriptor, and every socket with co-op off, keeps the
+ // offline answer (-1, ENETDOWN); EventFd stays the host counter below. A module result -errno comes back as -1 with the thread's last error set
+@@ -46,6 +54,11 @@ static int sk_fail(void) { t_skerr = SK_ENETDOWN; return -1; }
+ coop_node *dm_coop(void);   // hle_offline.c: NULL with co-op off
+ static int mpsk_is(int s) { coop_node *c = dm_coop(); return c && coop_vnet_is(c, s); }
+ static long mpsk_ret(int64_t r) { if (r >= 0) return (long)r; t_skerr = (int)-r; return -1; }
++// The first calls of each virtual-socket entry point and every failure but EAGAIN (64 lines), so a log shows how a game's transport starts and where it stops
++#define SKT(call) ({ static _Atomic int k_; long r_ = (call); static _Atomic int f_; \
++    if (atomic_fetch_add(&k_, 1) < 3) LOG("[coop] sock: the game calls %s(%d) -> %ld%s", __func__ + 5, s, r_, r_ < 0 ? " (failed)" : ""); \
++    else if (r_ < 0 && t_skerr != 35 && atomic_fetch_add(&f_, 1) < 16) LOG("[coop] sock: %s(%d) failed: errno %d", __func__ + 5, s, t_skerr); \
++    r_; })
+ int mpsk_errno(void) { return t_skerr; }
+ int mpsk_socket(int fam, int type, int proto) {
+     coop_node *c = dm_coop();
+@@ -54,15 +67,15 @@ int mpsk_socket(int fam, int type, int proto) {
+     if (r < 0) LOG("[coop] sock: Socket(%d, %#x, %d) stays offline (only AF_INET datagram sockets after ldn::Initialize are virtual)", fam, type, proto);
+     return (int)mpsk_ret(r);
+ }
+-int mpsk_bind(int s, const void *a, unsigned n) { return mpsk_is(s) ? (int)mpsk_ret(coop_vnet_bind(dm_coop(), s, a, n)) : sk_fail(); }
++int mpsk_bind(int s, const void *a, unsigned n) { return (int)SKT(mpsk_is(s) ? (int)mpsk_ret(coop_vnet_bind(dm_coop(), s, a, n)) : sk_fail()); }
+ static int mpsk_close(int s) { return (int)mpsk_ret(coop_vnet_close(dm_coop(), s)); }   // a virtual descriptor (the caller checked)
+-int mpsk_setopt(int s, int l, int o, const void *v, unsigned n) { return mpsk_is(s) ? (int)mpsk_ret(coop_vnet_setsockopt(dm_coop(), s, l, o, v, n)) : sk_fail(); }
+-int mpsk_getopt(int s, int l, int o, void *v, unsigned *n) { return mpsk_is(s) ? (int)mpsk_ret(coop_vnet_getsockopt(dm_coop(), s, l, o, v, n)) : sk_fail(); }
+-int mpsk_getname(int s, void *a, unsigned *n) { return mpsk_is(s) ? (int)mpsk_ret(coop_vnet_getsockname(dm_coop(), s, a, n)) : sk_fail(); }
+-int mpsk_fcntl(int s, int cmd, int v) { return mpsk_is(s) ? (int)mpsk_ret(coop_vnet_fcntl(dm_coop(), s, cmd, v)) : sk_fail(); }
+-long mpsk_sendto(int s, const void *b, unsigned long n, int f, const void *to, unsigned tl) { return mpsk_is(s) ? mpsk_ret(coop_vnet_sendto(dm_coop(), s, b, n, f, to, tl)) : sk_fail(); }
++int mpsk_setopt(int s, int l, int o, const void *v, unsigned n) { return (int)SKT(mpsk_is(s) ? (int)mpsk_ret(coop_vnet_setsockopt(dm_coop(), s, l, o, v, n)) : sk_fail()); }
++int mpsk_getopt(int s, int l, int o, void *v, unsigned *n) { if (mpsk_is(s)) LOG("[coop] sock: GetSockOpt(%#x, level %#x, option %#x)", s, l, o); return (int)SKT(mpsk_is(s) ? (int)mpsk_ret(coop_vnet_getsockopt(dm_coop(), s, l, o, v, n)) : sk_fail()); }
++int mpsk_getname(int s, void *a, unsigned *n) { return (int)SKT(mpsk_is(s) ? (int)mpsk_ret(coop_vnet_getsockname(dm_coop(), s, a, n)) : sk_fail()); }
++int mpsk_fcntl(int s, int cmd, int v) { if (mpsk_is(s)) LOG("[coop] sock: Fcntl(%#x, %d, %#x)", s, cmd, v); return (int)SKT(mpsk_is(s) ? (int)mpsk_ret(coop_vnet_fcntl(dm_coop(), s, cmd, v)) : sk_fail()); }
++long mpsk_sendto(int s, const void *b, unsigned long n, int f, const void *to, unsigned tl) { return SKT(mpsk_is(s) ? mpsk_ret(coop_vnet_sendto(dm_coop(), s, b, n, f, to, tl)) : sk_fail()); }
+ long mpsk_send(int s, const void *b, unsigned long n, int f) { return mpsk_sendto(s, b, n, f, NULL, 0); }   // no connected sockets: DestAddrRequired on a virtual one
+-long mpsk_recvfrom(int s, void *b, unsigned long n, int f, void *from, unsigned *fl) { return mpsk_is(s) ? mpsk_ret(coop_vnet_recvfrom(dm_coop(), s, b, n, f, from, fl)) : sk_fail(); }
++long mpsk_recvfrom(int s, void *b, unsigned long n, int f, void *from, unsigned *fl) { return SKT(mpsk_is(s) ? mpsk_ret(coop_vnet_recvfrom(dm_coop(), s, b, n, f, from, fl)) : sk_fail()); }
+ long mpsk_recv(int s, void *b, unsigned long n, int f) { return mpsk_recvfrom(s, b, n, f, NULL, NULL); }
+ #define SKF(m, cname, ...) HLE_FORCE(m, "bsd socket service (cut): returns -1/ENETDOWN", int, cname, __VA_ARGS__)
+ // Poll / Select with nothing to wait on: the host creates no socket, so a game's descriptors are all -1, or it passes none. POSIX and Horizon's bsd service ignore negative
