@@ -1,4 +1,60 @@
-# NX2Apple Multiplayer Directory (prototype)
+# NX2Apple Multiplayer Directory (prototype) and coop-relay
+
+This module holds two programs:
+
+- `cmd/coop-relay`: the relay for internet play. It works today with patch 0099 (`DM_COOP`). See "Internet play through coop-relay" below.
+- `cmd/server`: a directory and signaling prototype for later (automatic matching, UDP hole punching). The engine does not talk to it yet.
+
+## Internet play through coop-relay
+
+Local wireless play (`DM_COOP=auto`) finds hosts on the same Wi-Fi. With a relay, players on different networks meet the same way:
+everybody connects out to the relay, nobody forwards a port, and it works behind any NAT, CGNAT and mobile data included.
+
+- The host opens its room at the relay while the game hosts. A visitor's scan asks the relay for the room and the game lists the host's
+  island as on a LAN. The relay pairs the visitor's link with one the host dials for it and copies bytes between them.
+- The room code decides who meets. The relay only learns a 16-byte room id derived one-way from it (HKDF in `hle_coop_auth.c`). Every
+  link proves the code both ways and every frame carries a tag, so the relay cannot forge or change game messages. It can read them:
+  nothing is encrypted.
+- Through a relay the game's datagrams travel over the TCP link. Latency is the round trip to the relay and back.
+
+### Players
+
+Every player (Mac: `~/Library/Application Support/nxnative/<title id>/env.txt`, iPhone: `Documents/env.txt`) adds:
+
+```
+DM_COOP=auto
+DM_COOP_INTERNET=1
+DM_COOP_ROOM=XXXX-XXXX-XXXX-XXXX
+DM_COOP_RELAY=<the relay's public IPv4>:47610
+```
+
+`DM_COOP=auto` is what the launcher's "Local wireless play" switch sets. Everyone uses the same room code. To make one, start hosting
+without `DM_COOP_ROOM`: the host's log prints `this session's room code is ...`. Then play as on a LAN (the host invites, the visitor
+looks for a local connection). The same main build and the same cheats are required on every side.
+
+### The server
+
+`coop-relay` listens on 127.0.0.1 unless told otherwise. On a server:
+
+```sh
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o coop-relay ./cmd/coop-relay   # amd64 for x86 servers
+scp coop-relay deploy/coop-relay.service <server>:
+ssh <server> 'sudo install -m 755 coop-relay /usr/local/bin/ && sudo install -m 644 coop-relay.service /etc/systemd/system/ \
+  && sudo systemctl daemon-reload && sudo systemctl enable --now coop-relay'
+```
+
+Or with Docker: `docker run -d --restart unless-stopped -p 47610:47610 --entrypoint /usr/local/bin/coop-relay <image> -listen 0.0.0.0:47610`.
+
+Open 47610/tcp in the cloud firewall and on the host. On Oracle Cloud that is an ingress rule in the VCN's security list (or the
+instance's NSG), and on Oracle's Ubuntu and Oracle Linux images also the host's own rules, for example
+`sudo iptables -I INPUT -p tcp --dport 47610 -j ACCEPT` (save it with `netfilter-persistent save` on Ubuntu) or
+`sudo firewall-cmd --permanent --add-port=47610/tcp && sudo firewall-cmd --reload`.
+
+Limits (flags): 64 rooms, 7 visitors a room, 256 links, 24 links per address, 10 new links a second per address, 60 lookups of absent
+rooms a minute per address, a room lives 12 hours and carries 4 GiB, 256 KiB a second per direction of a pair. The log names rooms by
+the first 4 bytes of their id and never records payloads. `journalctl -u coop-relay` shows it.
+
+## The directory prototype
 
 This is the first server-side implementation slice for the agreed model:
 - one public presence space; no rooms or room codes;

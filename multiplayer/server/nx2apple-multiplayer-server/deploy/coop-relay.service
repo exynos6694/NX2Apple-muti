@@ -1,0 +1,25 @@
+# systemd unit for coop-relay on a Linux server (Oracle Cloud, any VPS).
+# Install: copy the linux binary to /usr/local/bin/coop-relay, this file to /etc/systemd/system/, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now coop-relay
+# Open 47610/tcp in the cloud firewall (Oracle: the VCN's security list or NSG) and in the host firewall.
+[Unit]
+Description=NX2Apple internet play relay (coop-relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/coop-relay -listen 0.0.0.0:47610
+Restart=on-failure
+RestartSec=2
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
