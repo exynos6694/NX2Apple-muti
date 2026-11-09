@@ -47,9 +47,21 @@ def clean_env(**extra):
     return {**{k: v for k, v in os.environ.items() if k not in REPO_ENV}, 'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8', **extra}
 
 
+def git_env():
+    """clean_env() with git's messages in English: apply_series reads them ('No changes', 'Patch failed'), and git on a Mac
+    otherwise translates them into the system language even with no LANG set."""
+    env = clean_env()
+    if env.get('LC_ALL'):
+        env.setdefault('LC_CTYPE', env['LC_ALL'])
+    env.pop('LC_ALL', None)
+    env.pop('LANGUAGE', None)
+    env['LC_MESSAGES'] = 'C'
+    return env
+
+
 def git(*a, cwd=None, check=True, inp=None, binary=False):
     kw = {'text': True, 'encoding': 'utf-8', 'errors': 'replace'} if not binary else {}
-    r = subprocess.run(['git', '-c', 'core.autocrlf=false', *a], cwd=cwd or REPO, input=inp, capture_output=True, env=clean_env(), **kw)
+    r = subprocess.run(['git', '-c', 'core.autocrlf=false', *a], cwd=cwd or REPO, input=inp, capture_output=True, env=git_env(), **kw)
     if check and r.returncode:
         raise Fail(f'git {" ".join(a)} failed: {(r.stderr if not binary else r.stderr.decode(errors="replace")).strip()[-1500:]}')
     return r
