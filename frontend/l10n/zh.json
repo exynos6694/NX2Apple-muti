@@ -1067,7 +1067,7 @@
   "launch.section.Game": "游戏",
   "launch.section.Performance": "性能",
   "launch.set.DM_COOP": "本地无线联机",
-  "launch.set.DM_COOP.note": "与同一 Wi-Fi 上的 NX2Apple 玩家使用游戏自带的本地无线模式一起玩。首次使用时会请求一次本地网络权限。所有玩家需要相同的游戏版本。",
+  "launch.set.DM_COOP.note": "通过 NX2Apple 的服务器经互联网，与任何地方的 NX2Apple 玩家使用游戏自带的本地无线模式一起玩。每个游戏同一时间只能有一位玩家主持。所有玩家需要相同的游戏版本。",
   "launch.set.DM_DYNAMIC_RESOLUTION": "动态分辨率",
   "launch.set.DM_DYNAMIC_RESOLUTION.note": "允许游戏在负载较高时降低分辨率。关闭后保持所选主机模式的完整分辨率。",
   "launch.set.DM_FPS_HOLD": "帧延迟时保持",

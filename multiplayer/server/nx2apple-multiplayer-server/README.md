@@ -19,18 +19,16 @@ everybody connects out to the relay, nobody forwards a port, and it works behind
 
 ### Players
 
-Every player (Mac: `~/Library/Application Support/nxnative/<title id>/env.txt`, iPhone: `Documents/env.txt`) adds:
+Nothing to set up. The launcher's "Local wireless play" switch (`DM_COOP=auto`) plays through the built-in relay (patch 0100,
+`COOP_RELAY_BUILTIN` in `coop.h`: 158.180.89.88:47610) in one room per game, derived from the title ID (`coop_room_for_title`). Then
+play as on a LAN: the host invites, the visitor looks for a local connection. The same main build and the same cheats are required on
+every side, and one player at a time can host each game.
 
-```
-DM_COOP=auto
-DM_COOP_INTERNET=1
-DM_COOP_ROOM=XXXX-XXXX-XXXX-XXXX
-DM_COOP_RELAY=<the relay's public IPv4>:47610
-```
+Overrides, in `env.txt` (Mac: `~/Library/Application Support/nxnative/<title id>/env.txt`, iPhone: `Documents/env.txt`):
 
-`DM_COOP=auto` is what the launcher's "Local wireless play" switch sets. Everyone uses the same room code. To make one, start hosting
-without `DM_COOP_ROOM`: the host's log prints `this session's room code is ...`. Then play as on a LAN (the host invites, the visitor
-looks for a local connection). The same main build and the same cheats are required on every side.
+- `DM_COOP_ROOM=XXXX-XXXX-XXXX-XXXX`: a private room, the same code on every side.
+- `DM_COOP_RELAY=<IPv4>[:<port>]`: another relay.
+- `DM_COOP_INTERNET=0`: this Wi-Fi only (DNS-SD, no server), as before patch 0100.
 
 ### The server
 

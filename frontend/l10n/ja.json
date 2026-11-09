@@ -1066,7 +1066,7 @@
   "launch.section.Game": "ゲーム",
   "launch.section.Performance": "パフォーマンス",
   "launch.set.DM_COOP": "ローカル通信プレイ",
-  "launch.set.DM_COOP.note": "同じWi-FiにいるNX2Appleのプレイヤーと、ゲームのローカル通信モードで遊びます。初回にローカルネットワークへのアクセスを一度だけ求めます。全員が同じゲームバージョンである必要があります。",
+  "launch.set.DM_COOP.note": "どこにいるNX2Appleのプレイヤーとも、NX2Appleのサーバー経由でインターネット越しにゲームのローカル通信モードで遊びます。ホストできるのは1つのゲームにつき同時に1人です。全員が同じゲームバージョンである必要があります。",
   "launch.set.DM_DYNAMIC_RESOLUTION": "動的解像度",
   "launch.set.DM_DYNAMIC_RESOLUTION.note": "負荷が高いとき、ゲームが解像度を下げることを許可します。オフにすると、選択したモードのフル解像度を維持します。",
   "launch.set.DM_FPS_HOLD": "遅れたフレームを保持",

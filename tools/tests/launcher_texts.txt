@@ -44,7 +44,7 @@ Performance HUD
 Picture
 Picture shape
 Pipeline prebuild
-Play the game's local wireless mode with NX2Apple players on the same Wi-Fi. Asks once for local network access. Every player needs the same game version.
+Play the game's local wireless mode with NX2Apple players anywhere, over the internet through NX2Apple's server. One player at a time can host each game. Every player needs the same game version.
 Portuguese
 Press a button to join
 Render scale

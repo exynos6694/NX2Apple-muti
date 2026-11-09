@@ -1,0 +1,217 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: exynos6694 <azsx6694@naver.com>
+Date: Mon, 9 Nov 2026 19:50:04 +0900
+Subject: [PATCH] Local wireless play: online by default through NX2Apple's
+ relay, one room per game
+
+The launcher's "Local wireless play" switch (DM_COOP=auto) alone now reaches players on other networks:
+with none of DM_COOP_INTERNET, DM_COOP_RELAY and DM_COOP_JOIN set, coop_env_node turns on internet play
+through COOP_RELAY_BUILTIN (158.180.89.88:47610, the coop-relay in NX2Apple's multiplayer/server) and
+uses the game's own room, coop_room_for_title: 80 bits of SHA-256 over a tag and the title ID, which a
+new coop_hooks.title gives (hle_offline.c: the profile's program ID). Nobody types a code or an address.
+One host at a time per game, and anyone with the title ID can compute the room. DM_COOP_ROOM gives a
+private room, DM_COOP_RELAY another relay, DM_COOP_INTERNET=0 the LAN play with DNS-SD as before.
+-DCOOP_RELAY_BUILTIN='""' builds without a built-in relay.
+
+t_coop_loop: the room is stable, valid and differs per game, and DM_COOP=auto alone picks the relay.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: fork-only
+Reason: The fork's own relay server as the default for local wireless play, so the launcher switch alone plays over the internet
+Issue: none yet (exynos6694/NX2Apple-muti feature/local-wireless)
+---
+ dm/games/settings.tsv       |  2 +-
+ dm/host/coop.h              | 10 ++++++++++
+ dm/host/hle_coop_auth.c     |  9 +++++++++
+ dm/host/hle_coop_ldn.c      | 10 ++++++++++
+ dm/host/hle_offline.c       |  3 ++-
+ dm/host/tests/t_coop_loop.c | 18 +++++++++++++++++-
+ docs/env_switches.tsv       |  8 ++++----
+ docs/settings.md            |  7 ++++---
+ 8 files changed, 57 insertions(+), 10 deletions(-)
+
+diff --git a/dm/games/settings.tsv b/dm/games/settings.tsv
+index 4ec069b..cc2a76b 100644
+--- a/dm/games/settings.tsv
++++ b/dm/games/settings.tsv
+@@ -24,7 +24,7 @@ DM_LANG	choice	languages	build:DM_LANG	languages>1	Game	Game language		level=bas
+ DM_FULLSCREEN	choice	0=Window,1=Fullscreen	0	platform:mac	Game	Display mode		level=basic
+ DM_PICTURE_FIT	choice	fit=Fit,fill=Fill	fit	platform:ios	Game	Picture	Fill crops the game's 16:9 picture to cover the screen. Health bars, subtitles or maps near the edges can be cut off. A full-screen picture without cropping needs a patch for each game.
+ DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	platform:ios	Game	Frame-rate counter
+-DM_COOP	toggle	auto/off	0	always	Game	Local wireless play	Play the game's local wireless mode with NX2Apple players on the same Wi-Fi. Asks once for local network access. Every player needs the same game version.
++DM_COOP	toggle	auto/off	0	always	Game	Local wireless play	Play the game's local wireless mode with NX2Apple players anywhere, over the internet through NX2Apple's server. One player at a time can host each game. Every player needs the same game version.
+ DM_TOUCH_HAPTICS	toggle	-	1	platform:ios	Controls	Touch feedback
+ DM_RUMBLE	toggle	-	1	always	Controls	Game rumble		level=basic
+ DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Controls	Rumble strength		needs=DM_RUMBLE=1
+diff --git a/dm/host/coop.h b/dm/host/coop.h
+index 63d5e2c..3432ff1 100644
+--- a/dm/host/coop.h
++++ b/dm/host/coop.h
+@@ -28,6 +28,12 @@ enum { COOP_SCOPE_LOOPBACK, COOP_SCOPE_LAN, COOP_SCOPE_INTERNET };
+ #define COOP_RELAY_PORT_DEFAULT 47610      // tools/coop-relay's port
+ #define COOP_ROOM_LEN 16                   // a room code's symbols (Crockford base32, 5 bits each: 80 bits)
+ #define COOP_ROOM_SHOWN (COOP_ROOM_LEN + 4)  // XXXX-XXXX-XXXX-XXXX and its NUL
++// NX2Apple's built-in relay (multiplayer/server/.../cmd/coop-relay): DM_COOP=auto with none of DM_COOP_INTERNET, DM_COOP_RELAY and DM_COOP_JOIN set
++// plays through it, in one room per game (coop_room_for_title), so the launcher's switch alone reaches players on other networks. DM_COOP_INTERNET=0
++// keeps step 1c's LAN play (DNS-SD). Build with -DCOOP_RELAY_BUILTIN='""' to have no built-in relay
++#ifndef COOP_RELAY_BUILTIN
++#define COOP_RELAY_BUILTIN "158.180.89.88:47610"
++#endif
+ 
+ typedef struct coop_hooks {
+     void *user;
+@@ -38,6 +44,7 @@ typedef struct coop_hooks {
+     const char *(*build)(void *user);                   // main's build ID in hex; the first 16 digits are compared
+     uint64_t (*mods)(void *user, char *what, size_t n); // a fingerprint of the active gameplay mods or cheats, 0 = none; what: a short text for logs
+     int (*platform)(void *user);                        // NodeInfo.Platform for this game (0: Switch, 1: Switch 2); NULL or negative: the config's (1)
++    uint64_t (*title)(void *user);                      // the game's title ID: coop_env_node's built-in relay gives each game its own room; NULL: no built-in relay
+ } coop_hooks;
+ 
+ typedef struct coop_cfg {
+@@ -72,6 +79,9 @@ int coop_cfg_parse_ex(coop_cfg *c, const char *coop, const char *uid, const char
+ int coop_room_normalize(const char *in, char out[COOP_ROOM_LEN + 1]);
+ void coop_room_new(char out[COOP_ROOM_LEN + 1]);   // 80 bits from the system's random source
+ void coop_room_format(const char *norm, char out[COOP_ROOM_SHOWN]);
++// The built-in relay's room for a game: 80 bits of SHA-256("nx2apple coop room v1" || title ID, little-endian), normalized. Everyone playing that
++// game through the built-in relay shares it: one host at a time, and anyone with the title ID can compute it
++void coop_room_for_title(uint64_t title, char out[COOP_ROOM_LEN + 1]);
+ // The process's node from DM_COOP / DM_UID, created on first call (thread-safe); NULL when DM_COOP is unset, off or invalid (logged once).
+ // DM_COOP_TCP=1 sets tcp_only (game datagrams over the control link: a TCP-only path such as an SSH tunnel; a station's choice, the host follows it).
+ // DM_COOP_INTERNET=1, DM_COOP_ROOM=<code>, DM_COOP_RELAY=<IPv4>[:<port>]: internet play (coop_cfg_parse_ex); a host's new room code is logged.
+diff --git a/dm/host/hle_coop_auth.c b/dm/host/hle_coop_auth.c
+index 7ec83a9..4d8fe02 100644
+--- a/dm/host/hle_coop_auth.c
++++ b/dm/host/hle_coop_auth.c
+@@ -127,6 +127,15 @@ void coop_room_new(char out[COOP_ROOM_LEN + 1]) {
+     out[COOP_ROOM_LEN] = 0;
+     cwipe(r, sizeof r);
+ }
++void coop_room_for_title(uint64_t title, char out[COOP_ROOM_LEN + 1]) {
++    static const char tag[] = "nx2apple coop room v1";
++    uint8_t m[sizeof tag - 1 + 8], h[32];
++    memcpy(m, tag, sizeof tag - 1);
++    for (int i = 0; i < 8; i++) m[sizeof tag - 1 + i] = (uint8_t)(title >> 8 * i);
++    csha256(m, sizeof m, h);
++    for (int i = 0; i < COOP_ROOM_LEN; i++) out[i] = B32[h[i] & 31];
++    out[COOP_ROOM_LEN] = 0;
++}
+ void coop_room_format(const char *norm, char out[COOP_ROOM_SHOWN]) {
+     int k = 0;
+     for (int i = 0; i < COOP_ROOM_LEN && norm[i]; i++) { if (i && i % 4 == 0) out[k++] = '-'; out[k++] = norm[i]; }
+diff --git a/dm/host/hle_coop_ldn.c b/dm/host/hle_coop_ldn.c
+index 1f62c24..0c0e549 100644
+--- a/dm/host/hle_coop_ldn.c
++++ b/dm/host/hle_coop_ldn.c
+@@ -183,6 +183,14 @@ coop_node *coop_env_node(const coop_hooks *hooks) {
+         const char *join = getenv("DM_COOP_JOIN");   // the launcher's "Join address" under its Link Play switch: auto becomes join:<it>
+         int joined = join && *join && mode && !strcmp(mode, "auto") && strlen(join) < 64;
+         if (joined) { snprintf(jm, sizeof jm, "join:%s", join); mode = jm; }
++        // the built-in relay: the launcher's switch (auto) with nothing else set plays through NX2Apple's server, one room per game
++        char troom[COOP_ROOM_LEN + 1];
++        uint64_t title = hooks && hooks->title ? hooks->title(hooks->user) : 0;
++        int builtin = !joined && mode && !strcmp(mode, "auto") && !(inet && *inet) && !(relay && *relay) && title && sizeof COOP_RELAY_BUILTIN > 1;
++        if (builtin) {
++            inet = "1"; relay = COOP_RELAY_BUILTIN;
++            if (!(room && *room)) { coop_room_for_title(title, troom); room = troom; }
++        }
+         int r = coop_cfg_parse_ex(&c, mode, getenv("DM_UID"), inet, room, relay, err, sizeof err);
+         const char *t = getenv("DM_COOP_TCP"), *d = getenv("DM_COOP_DISCOVERY");
+         c.tcp_only = t && *t && strcmp(t, "0");
+@@ -202,6 +210,8 @@ coop_node *coop_env_node(const coop_hooks *hooks) {
+                       c.tcp_only ? ", game datagrams over the control link (DM_COOP_TCP)" : "");
+             if (c.auth) {
+                 char shown[COOP_ROOM_SHOWN]; coop_room_format(c.room, shown);
++                if (builtin) coop_logf(node, "online play through NX2Apple's relay (built in): %s, this game's room%s; DM_COOP_INTERNET=0 keeps play on this Wi-Fi only",
++                                       COOP_RELAY_BUILTIN, room == troom ? "" : " from DM_COOP_ROOM");
+                 if (c.room_new) coop_logf(node, "internet play: this session's room code is %s; visitors need it (set DM_COOP_ROOM to keep one code across sessions)", shown);
+                 else coop_logf(node, "internet play: room code %s", shown);
+                 if (c.relay_ip) coop_logf(node, "internet play: through the relay %u.%u.%u.%u:%u (hosting opens the room there, scanning asks it for the room's host)",
+diff --git a/dm/host/hle_offline.c b/dm/host/hle_offline.c
+index 0417dd1..95239c7 100644
+--- a/dm/host/hle_offline.c
++++ b/dm/host/hle_offline.c
+@@ -42,10 +42,11 @@ static uint64_t coop_hmods(void *u, char *what, size_t n) {
+ }
+ // NodeInfo.Platform: Switch 2 programs (title IDs 04xx…) say 1, Switch programs 0 (the byte is reserved there)
+ static int coop_hplatform(void *u) { (void)u; return (dm_profile()->program_id >> 56) == 0x04 ? 1 : 0; }
++static uint64_t coop_htitle(void *u) { (void)u; return dm_profile()->program_id; }   // the built-in relay's room for this game
+ coop_node *dm_coop(void) {   // the process's coop node when DM_COOP is set (and not off), else NULL (hle_net.c and hle_misc.c ask too)
+     static coop_node *_Atomic node; static _Atomic int done;
+     if (atomic_load(&done)) return atomic_load(&node);
+-    static const coop_hooks h = {NULL, coop_hlog, coop_hsleep, coop_hstate, coop_hbuild, coop_hmods, coop_hplatform};
++    static const coop_hooks h = {NULL, coop_hlog, coop_hsleep, coop_hstate, coop_hbuild, coop_hmods, coop_hplatform, coop_htitle};
+     coop_node *n = coop_env_node(&h);
+     atomic_store(&node, n); atomic_store(&done, 1);
+     return n;
+diff --git a/dm/host/tests/t_coop_loop.c b/dm/host/tests/t_coop_loop.c
+index 5b90070..b9e545e 100644
+--- a/dm/host/tests/t_coop_loop.c
++++ b/dm/host/tests/t_coop_loop.c
+@@ -78,8 +78,24 @@ static void run(int inet) {
+     if (inet) CHECK(st.auth_ok >= 1, "room code proven (%llu)", (unsigned long long)st.auth_ok);
+     coop_destroy(s); coop_destroy(h);
+ }
++// The built-in relay: DM_COOP=auto alone plays through it in the game's own room; the room is stable, valid and differs per game
++static char g_seen[512];
++static void lg_keep(void *u, const char *l) { lg(u, l); if (strstr(l, "built in")) snprintf(g_seen, sizeof g_seen, "%s", l); }
++static uint64_t title_acnh(void *u) { (void)u; return 0x01006F8002326000ull; }
++static void builtin(void) {
++    printf("-- built-in relay\n");
++    char a[COOP_ROOM_LEN + 1], b[COOP_ROOM_LEN + 1], c[COOP_ROOM_LEN + 1], n[COOP_ROOM_LEN + 1];
++    coop_room_for_title(0x01006F8002326000ull, a); coop_room_for_title(0x01006F8002326000ull, b); coop_room_for_title(0x0100000000010000ull, c);
++    CHECK(!strcmp(a, b) && strcmp(a, c), "the same room for a game, another for another game (%s %s)", a, c);
++    CHECK(coop_room_normalize(a, n) && !strcmp(a, n), "a valid room code (%s)", a);
++    setenv("DM_COOP", "auto", 1); unsetenv("DM_COOP_INTERNET"); unsetenv("DM_COOP_RELAY"); unsetenv("DM_COOP_JOIN"); unsetenv("DM_COOP_ROOM");
++    coop_hooks h = {"env", lg_keep, NULL, NULL, bld, NULL, plat0, title_acnh};
++    coop_node *e = coop_env_node(&h);
++    CHECK(e && coop_role(e) == COOP_ROLE_AUTO, "DM_COOP=auto alone makes a node");
++    CHECK(sizeof COOP_RELAY_BUILTIN == 1 || strstr(g_seen, COOP_RELAY_BUILTIN), "it plays through the built-in relay: '%s'", g_seen);
++}
+ int main(void) {
+-    run(0); run(1);
++    run(0); run(1); builtin();
+     printf(fails ? "%d FAILED t_coop_loop\n" : "ok t_coop_loop\n", fails);
+     return fails != 0;
+ }
+diff --git a/docs/env_switches.tsv b/docs/env_switches.tsv
+index e9b4f60..ba15b23 100644
+--- a/docs/env_switches.tsv
++++ b/docs/env_switches.tsv
+@@ -19,12 +19,12 @@ DM_CHEATS_ANY_BUILD	switch	`1` loads a cheat file written for another build of t
+ DM_CHEATS_DEBUG	diagnostic	Logs every memory write a cheat makes and the cheat file context the menu's "another version" rows come from
+ DM_CHEATS_ON	switch	Comma-separated cheat names turned on at launch, besides the saved per-build enabled states
+ DM_CHEATS_WINDOW	switch	`1` opens the Mac Cheats panel beside the game from the start
+-DM_COOP	player	Local wireless play between NX2Apple builds (hle_coop_*.c, from pokopia-native's Link Play): `auto` hosts on the LAN while the game hosts (nn::ldn CreateNetwork) and finds LAN hosts with DNS-SD (`_nx2apple-ldn._udp`) while it scans; `join:<IPv4>[:<port>]` joins one host by address (loopback, RFC 1918 or 169.254 only, any address with `DM_COOP_INTERNET=1`; port 47600 by default); `host:<port>` hosts on 127.0.0.1 only; `off` (the default) keeps nn::ldn cut. The launcher's "Local wireless play" switch sets `auto` / `off`. Players meet only with the same main build and the same cheats
++DM_COOP	player	Local wireless play between NX2Apple builds (hle_coop_*.c, from pokopia-native's Link Play): `auto` alone plays through NX2Apple's built-in relay (`COOP_RELAY_BUILTIN`, 158.180.89.88:47610) in one room per game, so players on other networks meet: hosting (nn::ldn CreateNetwork) opens the room there and a scan finds its host; with `DM_COOP_INTERNET=0` `auto` hosts on the LAN instead and finds LAN hosts with DNS-SD (`_nx2apple-ldn._udp`); `join:<IPv4>[:<port>]` joins one host by address (loopback, RFC 1918 or 169.254 only, any address with `DM_COOP_INTERNET=1`; port 47600 by default); `host:<port>` hosts on 127.0.0.1 only; `off` (the default) keeps nn::ldn cut. The launcher's "Local wireless play" switch sets `auto` / `off`. Players meet only with the same main build and the same cheats
+ DM_COOP_DISCOVERY	switch	`0` turns DNS-SD off under `DM_COOP=auto` (no advertising, no browsing): visitors join by address
+-DM_COOP_INTERNET	player	`1` turns on internet play: links from any address, each proving `DM_COOP_ROOM`, every message tagged against changes (not encrypted); `join:` takes public addresses. Off by default
++DM_COOP_INTERNET	player	`1` turns on internet play: links from any address, each proving `DM_COOP_ROOM`, every message tagged against changes (not encrypted); `join:` takes public addresses. `0` keeps `DM_COOP=auto` on the LAN (DNS-SD). Unset: on through the built-in relay when `DM_COOP=auto` has no `DM_COOP_RELAY` or `DM_COOP_JOIN`, else off
+ DM_COOP_JOIN	player	`<IPv4>[:<port>]`: with `DM_COOP=auto`, joins that host instead of finding hosts with DNS-SD (as `DM_COOP=join:` does; a public address needs `DM_COOP_INTERNET=1`). Empty by default
+-DM_COOP_RELAY	player	`<IPv4>[:<port>]` (port 47610 by default): with `DM_COOP_INTERNET=1` and `DM_COOP=auto`, a relay the players run themselves: hosting opens the room there, scanning asks it for the room's host. Empty by default
+-DM_COOP_ROOM	player	The room code, `XXXX-XXXX-XXXX-XXXX` (16 letters and digits, 80 bits): with `DM_COOP_INTERNET=1` every link proves it. A visitor needs the host's; a host without one gets a new one each session (in the log). Empty by default
++DM_COOP_RELAY	player	`<IPv4>[:<port>]` (port 47610 by default): with `DM_COOP_INTERNET=1` and `DM_COOP=auto`, a relay the players run themselves (`multiplayer/server/.../cmd/coop-relay` in NX2Apple): hosting opens the room there, scanning asks it for the room's host. Empty by default: the built-in relay
++DM_COOP_ROOM	player	The room code, `XXXX-XXXX-XXXX-XXXX` (16 letters and digits, 80 bits): with `DM_COOP_INTERNET=1` every link proves it. A visitor needs the host's; a host without one gets a new one each session (in the log). Empty by default: through the built-in relay, the game's own room (`coop_room_for_title`), else a new one
+ DM_COOP_TCP	switch	`1` sends the game's local-play datagrams over the control link instead of UDP (a TCP-only path such as an SSH tunnel)
+ DM_COPY_GAME_RESOURCES	switch	`NO` skips the Xcode build phase that copies the game's resources into the app (`stage_resources.sh`, on by default); `build_ipa.sh` sets it for its unsigned build, which packs them itself
+ DM_COPY_ROMFS	switch	`NO` keeps the game files out of the app, in the Xcode build phase (`stage_resources.sh`) and in the unsigned IPA of `build_ipa.sh` (on by default): `main.m` takes the validated `Documents/romfs.img` copied by `scripts/push_romfs.sh`, then a `Documents/romfs` folder; the build writes the image's identity as `romfs.id` into the app, and `main.m` uses only a matching image (`--romfs separate` of the NSP script sets this)
+diff --git a/docs/settings.md b/docs/settings.md
+index 589636b..0f6a89e 100644
+--- a/docs/settings.md
++++ b/docs/settings.md
+@@ -93,11 +93,12 @@ Shows the frames per second at the top left.
+ 
+ ### Local wireless play
+ 
+-Off by default. On, the game's own local wireless mode (Animal Crossing's Local Play, a Link Play "Local connection", any game that plays together through nn::ldn) works between NX2Apple builds on the same Wi-Fi: one player hosts in the game, the others find that host in the game's list a few seconds later. iPhone, iPad and Mac mix. The first use asks for local network access once.
++Off by default. On, the game's own local wireless mode (Animal Crossing's Local Play, a Link Play "Local connection", any game that plays together through nn::ldn) works between NX2Apple builds anywhere, on the same Wi-Fi or not: the switch plays through NX2Apple's relay server, in one room per game. One player hosts in the game, the others find that host in the game's list a few seconds later. One host at a time per game. iPhone, iPad and Mac mix. The first use asks for local network access once.
+ 
+ - Every player runs the same game version (main's build) with the same cheats, and each needs their own save.
+-- Where the router hides the other devices, `DM_COOP_JOIN=<host's IPv4>` in `Documents/env.txt` joins by address.
+-- Over the internet: every player sets `DM_COOP_INTERNET=1` and the same `DM_COOP_ROOM` (the host's log names a new code when it has none), the visitors `DM_COOP_JOIN=<host's address>`, and the host forwards port 47600, TCP and UDP. The traffic is authenticated, not encrypted.
++- `DM_COOP_INTERNET=0` in `Documents/env.txt` keeps play on this Wi-Fi only (DNS-SD, no server). There, where the router hides the other devices, `DM_COOP_JOIN=<host's IPv4>` joins by address.
++- A private room: every player sets the same `DM_COOP_ROOM`. Another relay: `DM_COOP_RELAY=<IPv4>[:<port>]`.
++- Without a relay, over the internet: every player sets `DM_COOP_INTERNET=1` and the same `DM_COOP_ROOM` (the host's log names a new code when it has none), the visitors `DM_COOP_JOIN=<host's address>`, and the host forwards port 47600, TCP and UDP. The traffic is authenticated, not encrypted.
+ 
+ ## Controls
+ 

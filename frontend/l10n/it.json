@@ -1067,7 +1067,7 @@
   "launch.section.Game": "Gioco",
   "launch.section.Performance": "Prestazioni",
   "launch.set.DM_COOP": "Gioco locale wireless",
-  "launch.set.DM_COOP.note": "Gioca alla modalità locale wireless del gioco con giocatori NX2Apple sulla stessa rete Wi-Fi. Chiede una volta l'accesso alla rete locale. Tutti i giocatori devono avere la stessa versione del gioco.",
+  "launch.set.DM_COOP.note": "Gioca alla modalità locale wireless del gioco con giocatori NX2Apple ovunque, via Internet tramite il server di NX2Apple. Per ogni gioco può ospitare un solo giocatore alla volta. Tutti i giocatori devono avere la stessa versione del gioco.",
   "launch.set.DM_DYNAMIC_RESOLUTION": "Risoluzione dinamica",
   "launch.set.DM_DYNAMIC_RESOLUTION.note": "Permette al gioco di abbassare la risoluzione quando il carico aumenta. Disattivala per mantenere la risoluzione piena della modalità scelta.",
   "launch.set.DM_FPS_HOLD": "Mantieni i fotogrammi in ritardo",
