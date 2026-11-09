@@ -1,0 +1,141 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: exynos6694 <azsx6694@naver.com>
+Date: Tue, 10 Nov 2026 00:10:29 +0900
+Subject: [PATCH] Local wireless play: the play history key, so Animal
+ Crossing's gate opens
+
+Animal Crossing: New Horizons 3.0.3 opened its network for visitors, then asked nn::friends for its
+play history registration key (the key it hands the other players, who register it) and, refused,
+closed the network with "a communication error occurred". With co-op on, GetPlayHistoryRegistrationKey
+now makes a key from the Uid ({type 1, key index, has a user, local, the Uid, 32 bytes of a hash where
+the HMAC goes}) and both AddPlayHistory overloads succeed without keeping anything. Offline nothing
+changes. On the Mac the gate now opens and a second build reaches it through the relay.
+
+Found with a window on DM_HLECOUNT, kept: hlecount_mark at ldn::CreateNetwork and hlecount_since at
+DestroyNetwork / Finalize log every HLE entry and svc the game called while its network was open
+(Mac only, with DM_HLECOUNT set).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: pending
+Reason: Local wireless play: nn::friends play history key with co-op on (Animal Crossing's gate)
+Issue: none yet (exynos6694/NX2Apple-muti feature/local-wireless)
+
+---
+ dm/host/hle_count.c   | 18 ++++++++++++++++++
+ dm/host/hle_friends.c | 24 ++++++++++++++++++++----
+ dm/host/hle_offline.c | 12 +++++++-----
+ 3 files changed, 45 insertions(+), 9 deletions(-)
+
+diff --git a/dm/host/hle_count.c b/dm/host/hle_count.c
+index de9f859..c23b701 100644
+--- a/dm/host/hle_count.c
++++ b/dm/host/hle_count.c
+@@ -48,7 +48,25 @@ void hlecount_seal(void) {
+ }
+ void hlecount_svc(int num) { if (g_hon > 0 && num >= 0 && num < 256) atomic_fetch_add(&g_hsvc[num], 1); }
+ void hlecount_flush(void) { if (hc_on() && g_hcode) hc_write(); }   // Also write a copy on the graceful exit path (SIGTERM / scene disconnect)
++// A window of calls: hlecount_mark notes every count, hlecount_since logs what was called since, one line per entry (local wireless play marks when
++// a game's network opens and logs when it closes, to see what the game asked between)
++static uint64_t g_hmark[HC_MAX], g_hmark_svc[256]; static int g_hmarked;
++void hlecount_mark(void) {
++    if (g_hon <= 0) return;
++    for (unsigned i = 0; i < g_nhc; i++) g_hmark[i] = atomic_load(&g_hc[i].n);
++    for (int k = 0; k < 256; k++) g_hmark_svc[k] = atomic_load(&g_hsvc[k]);
++    g_hmarked = 1;
++}
++void hlecount_since(const char *what) {
++    if (g_hon <= 0 || !g_hmarked) return;
++    unsigned lines = 0;
++    for (unsigned i = 0; i < g_nhc && lines < 400; i++) { uint64_t d = atomic_load(&g_hc[i].n) - g_hmark[i]; if (d) { LOG("DM_HLECOUNT %s: %s %s +%llu", what, g_hc[i].kind, g_hc[i].name, (unsigned long long)d); lines++; } }
++    for (int k = 0; k < 256; k++) { uint64_t d = atomic_load(&g_hsvc[k]) - g_hmark_svc[k]; if (d) LOG("DM_HLECOUNT %s: svc %#x +%llu", what, k, (unsigned long long)d); }
++    g_hmarked = 0;
++}
+ #else
++void hlecount_mark(void) {}
++void hlecount_since(const char *what) { (void)what; }
+ void *hlecount_wrap(const char *kind, const char *name, void *fn) { (void)kind; (void)name; return fn; }
+ void hlecount_seal(void) {}
+ void hlecount_svc(int num) { (void)num; }
+diff --git a/dm/host/hle_friends.c b/dm/host/hle_friends.c
+index 7f41e6c..7b1bb1c 100644
+--- a/dm/host/hle_friends.c
++++ b/dm/host/hle_friends.c
+@@ -2,6 +2,7 @@
+ // Not cut: the getters of Friend / Profile / FriendPresence and the constructors of Friend / Profile / UserPresence (they only read and write the game's own objects and do not go through the service).
+ // Return convention: Result returns RES_FAIL; bool returns false; event pointers get a SystemEvent that is bound to a kernel event and never fires.
+ #include "hle.h"
++#include <stdatomic.h>
+ 
+ // Notification event that never fires (GetSystemEvent-style calls return a pointer; bound on the guest thread on first use)
+ static _Alignas(16) uint8_t g_ev_notify[0x100], g_ev_invite[0x100];
+@@ -26,10 +27,25 @@ HLE_FORCE("_ZN2nn7friends14GetProfileListEPNS0_12AsyncContextEPNS0_7ProfileERKNS
+           Result, h_fr_GetProfileList, void *ctx, void *out, const void *uid, const void *ids, int n) { (void)ctx; (void)out; (void)uid; (void)ids; (void)n; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn7friends16UpdateFriendInfoEPNS0_6FriendERKNS_7account3UidEPKNS3_23NetworkServiceAccountIdEi", "friend info update fails (cut)",
+           Result, h_fr_UpdateFriendInfo, void *f, const void *uid, const void *ids, int n) { (void)f; (void)uid; (void)ids; (void)n; return RES_FAIL; }
+-HLE_FORCE("_ZN2nn7friends14AddPlayHistoryERKNS0_26PlayHistoryRegistrationKeyERKNS0_15InAppScreenNameES6_", "play history is not registered (cut)",
+-          Result, h_fr_AddPlayHistory, const void *k, const void *a, const void *b) { (void)k; (void)a; (void)b; return RES_FAIL; }
+-HLE_FORCE("_ZN2nn7friends29GetPlayHistoryRegistrationKeyEPNS0_26PlayHistoryRegistrationKeyERKNS_7account3UidEb", "play history key unavailable (cut)",
+-          Result, h_fr_GetPHKey, void *k, const void *uid, int local) { (void)k; (void)uid; (void)local; return RES_FAIL; }
++// Play history ("players you have played with"): offline there is no key and nothing is registered. With local wireless play on (DM_COOP), Animal
++// Crossing: New Horizons 3.0.3 asks for its key right after it opens its network to visitors and ends the session with "a communication error
++// occurred" when it fails; the key goes to the other players, who register it. So with co-op on the key is made here and registering succeeds
++// (nothing is kept). The key is 0x40 bytes: {u16 type 1, u8 key index, u8 has a user, u8 local, 11 reserved, the Uid, 32 bytes of HMAC}; the
++// HMAC is a hash of the Uid, which no one checks here
++struct coop_node; struct coop_node *dm_coop(void);   // hle_offline.c: NULL with co-op off
++HLE_FORCE("_ZN2nn7friends14AddPlayHistoryERKNS0_26PlayHistoryRegistrationKeyERKNS0_15InAppScreenNameES6_", "play history is not registered (cut; co-op: succeeds, nothing kept)",
++          Result, h_fr_AddPlayHistory, const void *k, const void *a, const void *b) { (void)k; (void)a; (void)b; return dm_coop() ? RES_OK : RES_FAIL; }
++HLE_FORCE("_ZN2nn7friends29GetPlayHistoryRegistrationKeyEPNS0_26PlayHistoryRegistrationKeyERKNS_7account3UidEb", "play history key unavailable (cut; co-op: a key from the Uid)",
++          Result, h_fr_GetPHKey, void *k, const void *uid, int local) {
++    if (!dm_coop() || !k) return RES_FAIL;
++    uint8_t *o = k; memset(o, 0, 0x40);
++    o[0] = 1; o[3] = uid != NULL; o[4] = local ? 1 : 0;
++    if (uid) memcpy(o + 0x10, uid, 16);
++    uint64_t h = 0xcbf29ce484222325ull;
++    for (int i = 0; i < 32; i++) { h = (h ^ o[0x10 + (i & 15)] ^ (uint8_t)i) * 0x100000001b3ull; o[0x20 + i] = (uint8_t)(h >> 32); }
++    static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("[coop] friends: play history key made for local play (nothing is registered)");
++    return RES_OK;
++}
+ // Notification queue
+ HLE_FORCE("_ZN2nn7friends17NotificationQueueC1Ev", "notification queue creates no session (cut)", void, h_fr_NqCtor, void *self) { (void)self; }
+ HLE_FORCE("_ZN2nn7friends17NotificationQueueD1Ev", "notification queue has no session to close (cut)", void, h_fr_NqDtor, void *self) { (void)self; }
+diff --git a/dm/host/hle_offline.c b/dm/host/hle_offline.c
+index b840ff6..a455e46 100644
+--- a/dm/host/hle_offline.c
++++ b/dm/host/hle_offline.c
+@@ -62,7 +62,8 @@ static uint32_t coop_said(const char *what, uint32_t r) {
+                                                          return coop_said(__func__ + 2, call); } } while (0)
+ #define COOPV(call) do { coop_node *c_ = dm_coop(); if (c_) return call; } while (0)   // a value, not a Result
+ HLE_FORCE("_ZN2nn3ldn10InitializeEv", "local wireless (coop / cut): initialization fails", Result, h_ldn_Init, void) { COOP(coop_ldn_initialize(c_)); return RES_FAIL; }
+-HLE_FORCE("_ZN2nn3ldn8FinalizeEv", "local wireless (coop / cut)", void, h_ldn_Fini, void) { coop_node *c = dm_coop(); if (c) coop_ldn_finalize(c); }
++void hlecount_since(const char *what);
++HLE_FORCE("_ZN2nn3ldn8FinalizeEv", "local wireless (coop / cut)", void, h_ldn_Fini, void) { hlecount_since("while the network was open"); coop_node *c = dm_coop(); if (c) coop_ldn_finalize(c); }
+ HLE_FORCE("_ZN2nn3ldn8GetStateEv", "local wireless (coop / cut): state 0 (none)", int, h_ldn_State, void) { COOPV(coop_ldn_state(c_)); return 0; }
+ HLE_FORCE("_ZN2nn3ldn22AttachStateChangeEventEPNS_2os15SystemEventTypeE", "local wireless state event: bound; the coop module fires it on every state or network change, else never", void, h_ldn_Attach, void *ev) { hle_bind_system_event(ev, 0); atomic_store(&g_ldn_attached, ev); (void)g_ev_ldn; }
+ HLE_FORCE("_ZN2nn3ldn11OpenStationEv", "local wireless (coop / cut)", Result, h_ldn_OpenSta, void) { COOP(coop_ldn_open_station(c_)); return RES_FAIL; }
+@@ -70,11 +71,12 @@ HLE_FORCE("_ZN2nn3ldn12CloseStationEv", "local wireless (coop / cut)", Result, h
+ HLE_FORCE("_ZN2nn3ldn15OpenAccessPointEv", "local wireless (coop / cut)", Result, h_ldn_OpenAp, void) { COOP(coop_ldn_open_ap(c_)); return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn16CloseAccessPointEv", "local wireless (coop / cut)", Result, h_ldn_CloseAp, void) { COOP(coop_ldn_close_ap(c_)); return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn10DisconnectEv", "local wireless (coop / cut)", Result, h_ldn_Disc, void) { COOP(coop_ldn_disconnect(c_)); return RES_FAIL; }
+-HLE_FORCE("_ZN2nn3ldn14DestroyNetworkEv", "local wireless (coop / cut)", Result, h_ldn_Destroy, void) { COOP(coop_ldn_destroy_network(c_)); return RES_FAIL; }
++void hlecount_since(const char *what);   // hle_count.c: with DM_HLECOUNT on the Mac, what the game called while its network was open
++HLE_FORCE("_ZN2nn3ldn14DestroyNetworkEv", "local wireless (coop / cut)", Result, h_ldn_Destroy, void) { hlecount_since("while the network was open"); COOP(coop_ldn_destroy_network(c_)); return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", "local wireless scan (coop / cut): 0 found", Result, h_ldn_Scan, void *out, int *n, int max, const void *f, int ch) { COOP(coop_ldn_scan(c_, out, n, max, f, ch)); (void)out; (void)max; (void)f; (void)ch; if (n) *n = 0; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn11ScanPrivateEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", "local wireless scan (coop / cut): 0 found", Result, h_ldn_ScanP, void *out, int *n, int max, const void *f, int ch) { COOP(coop_ldn_scan(c_, out, n, max, f, ch)); (void)out; (void)max; (void)f; (void)ch; if (n) *n = 0; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn13CreateNetworkERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_10UserConfigE", "local wireless (coop / cut)", Result, h_ldn_Create,
+-          const void *a, const void *b, const void *c) { COOP(coop_ldn_create_network(c_, a, b, c)); (void)a; (void)b; (void)c; return RES_FAIL; }
++          const void *a, const void *b, const void *c) { void hlecount_mark(void); hlecount_mark(); COOP(coop_ldn_create_network(c_, a, b, c)); (void)a; (void)b; (void)c; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn20CreateNetworkPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_17SecurityParameterERKNS0_10UserConfigEiPKNS0_12AddressEntryE", "local wireless (coop / cut)",
+           Result, h_ldn_CreateP, const void *a, const void *b, const void *c, const void *d, int n, const void *e) { (void)a; (void)b; (void)c; (void)d; (void)n; (void)e; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn7ConnectERKNS0_11NetworkInfoERKNS0_14SecurityConfigERKNS0_10UserConfigEiNS0_13ConnectOptionE", "local wireless (coop / cut)", Result, h_ldn_Connect,
+@@ -216,8 +218,8 @@ HLE_FORCE("_ZN2nn7friends13GetFriendListEPiPNS0_6FriendERKNS_7account3UidEiiRKNS
+ HLE_FORCE("_ZN2nn7friends27CheckFriendListAvailabilityEPbRKNS_7account3UidE", "friend list unavailable (cut)", Result, h_fr_ListAvail, uint8_t *out, const void *uid) { (void)uid; *out = 0; return RES_OK; }
+ HLE_FORCE("_ZN2nn7friends25EnsureFriendListAvailableEPNS0_12AsyncContextERKNS_7account3UidE", "friend list (cut): the request fails at once", Result, h_fr_ListEnsure, void *ctx, const void *uid) { (void)ctx; (void)uid; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn7friends12AsyncContext7HasDoneEPb", "async context: always done", Result, h_fr_AcHasDone, void *self, uint8_t *done) { (void)self; *done = 1; return RES_OK; }
+-HLE_FORCE("_ZN2nn7friends14AddPlayHistoryERKNS_7account3UidERKNS0_26PlayHistoryRegistrationKeyERKNS0_15InAppScreenNameESA_", "play history is not registered (cut)",
+-          Result, h_fr_PlayHist2, const void *uid, const void *key, const void *a, const void *b) { (void)uid; (void)key; (void)a; (void)b; return RES_FAIL; }
++HLE_FORCE("_ZN2nn7friends14AddPlayHistoryERKNS_7account3UidERKNS0_26PlayHistoryRegistrationKeyERKNS0_15InAppScreenNameESA_", "play history is not registered (cut; co-op: succeeds, nothing kept)",
++          Result, h_fr_PlayHist2, const void *uid, const void *key, const void *a, const void *b) { (void)uid; (void)key; (void)a; (void)b; return dm_coop() ? RES_OK : RES_FAIL; }
+ 
+ // ---------- ngc: newer SDK overloads (with bool). Always judged as no profanity ----------
+ HLE_FORCE("_ZN2nn3ngc15ProfanityFilter10InitializeEPvmb", "profanity filter init; the host has no word list", Result, h_ngc_Init3, void *self, void *work, uint64_t sz, unsigned check) { (void)self; (void)work; (void)sz; (void)check; return RES_OK; }
