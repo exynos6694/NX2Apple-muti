@@ -6303,6 +6303,52 @@
         }
       }
     },
+    "Local wireless play": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lokales Drahtlosspiel"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local wireless play"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jeu local sans fil"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gioco locale wireless"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ローカル通信プレイ"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lokalt trådlöst spel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地无线联机"
+          }
+        }
+      }
+    },
     "Match screen": {
       "localizations": {
         "de": {
@@ -8231,6 +8277,52 @@
           "stringUnit": {
             "state": "translated",
             "value": "开始 %@"
+          }
+        }
+      }
+    },
+    "Play the game's local wireless mode with NX2Apple players on the same Wi-Fi. Asks once for local network access. Every player needs the same game version.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spielt den lokalen Drahtlosmodus des Spiels mit NX2Apple-Spielern im selben WLAN. Fragt einmal nach Zugriff auf das lokale Netzwerk. Alle Spieler brauchen dieselbe Spielversion."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play the game's local wireless mode with NX2Apple players on the same Wi-Fi. Asks once for local network access. Every player needs the same game version."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Joue au mode local sans fil du jeu avec des joueurs NX2Apple sur le même Wi-Fi. Demande une fois l'accès au réseau local. Tous les joueurs ont besoin de la même version du jeu."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gioca alla modalità locale wireless del gioco con giocatori NX2Apple sulla stessa rete Wi-Fi. Chiede una volta l'accesso alla rete locale. Tutti i giocatori devono avere la stessa versione del gioco."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同じWi-FiにいるNX2Appleのプレイヤーと、ゲームのローカル通信モードで遊びます。初回にローカルネットワークへのアクセスを一度だけ求めます。全員が同じゲームバージョンである必要があります。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spela spelets lokala trådlösa läge med NX2Apple-spelare på samma Wi-Fi. Frågar en gång om åtkomst till det lokala nätverket. Alla spelare behöver samma spelversion."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与同一 Wi-Fi 上的 NX2Apple 玩家使用游戏自带的本地无线模式一起玩。首次使用时会请求一次本地网络权限。所有玩家需要相同的游戏版本。"
           }
         }
       }

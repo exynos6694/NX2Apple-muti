@@ -35,6 +35,7 @@ Keeps a pipeline archive; uses more memory.
 Korean
 Latin American Spanish
 Lets the game lower its resolution under load. Turn off to keep full resolution for the selected console mode.
+Local wireless play
 Match screen
 Metal 4 pipelines
 MetalFX
@@ -43,6 +44,7 @@ Performance HUD
 Picture
 Picture shape
 Pipeline prebuild
+Play the game's local wireless mode with NX2Apple players on the same Wi-Fi. Asks once for local network access. Every player needs the same game version.
 Portuguese
 Press a button to join
 Render scale

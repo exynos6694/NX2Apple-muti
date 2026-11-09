@@ -915,6 +915,8 @@
   "launch.section.Controls": "Kontroller",
   "launch.section.Game": "Spel",
   "launch.section.Performance": "Prestanda",
+  "launch.set.DM_COOP": "Lokalt trådlöst spel",
+  "launch.set.DM_COOP.note": "Spela spelets lokala trådlösa läge med NX2Apple-spelare på samma Wi-Fi. Frågar en gång om åtkomst till det lokala nätverket. Alla spelare behöver samma spelversion.",
   "launch.set.DM_DYNAMIC_RESOLUTION": "Dynamisk upplösning",
   "launch.set.DM_DYNAMIC_RESOLUTION.note": "Låter spelet sänka upplösningen under belastning. Stäng av för att behålla full upplösning för det valda konsolläget.",
   "launch.set.DM_FPS_HOLD": "Håll bilder när de är sena",

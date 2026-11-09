@@ -1065,6 +1065,8 @@
   "launch.section.Controls": "Controls",
   "launch.section.Game": "Game",
   "launch.section.Performance": "Performance",
+  "launch.set.DM_COOP": "Local wireless play",
+  "launch.set.DM_COOP.note": "Play the game's local wireless mode with NX2Apple players on the same Wi-Fi. Asks once for local network access. Every player needs the same game version.",
   "launch.set.DM_DYNAMIC_RESOLUTION": "Dynamic resolution",
   "launch.set.DM_DYNAMIC_RESOLUTION.note": "Lets the game lower its resolution under load. Turn off to keep full resolution for the selected console mode.",
   "launch.set.DM_FPS_HOLD": "Hold frames when late",
