@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: exynos6694 <azsx6694@naver.com>
+Date: Mon, 9 Nov 2026 23:41:57 +0900
+Subject: [PATCH] Local wireless play: Horizon's errno and O_NONBLOCK on the
+ virtual sockets (Linux values)
+
+Animal Crossing: New Horizons 3.0.3 hosting showed error 2618-0006 every time: its Pia transport made
+one RecvFrom with MSG_DONTWAIT on its fresh socket, got -1 with errno 35 and gave up. Horizon's bsd
+service takes FreeBSD's sockaddrs, socket options and MSG_ / poll flags, but answers errno in Linux's
+numbering and uses Linux's O_NONBLOCK (0x800): yuzu's and Ryujinx's bsd services do the same (EAGAIN 11,
+EMSGSIZE 90). The coop module had FreeBSD's throughout, so "nothing yet" read as EDEADLK.
+
+coop.h's COOP_E* are now Linux's (EAGAIN 11, EMSGSIZE 90, ENOPROTOOPT 92, EADDRINUSE 98,
+EADDRNOTAVAIL 99, ENETDOWN 100, ENETUNREACH 101) and EDESTADDRREQ 89; fcntl takes 0x800 (and still
+FreeBSD's 4) and F_GETFL reports 0x800. The first-call socket log shows the errno. t_net_eventfd checks
+EAGAIN and O_NONBLOCK on a virtual socket.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: pending
+Reason: Local wireless play: Horizon's Linux errno and O_NONBLOCK on the virtual sockets (Animal Crossing error 2618-0006)
+Issue: none yet (exynos6694/NX2Apple-muti feature/local-wireless)
+
+---
+ dm/host/coop.h                | 17 +++++++++--------
+ dm/host/hle_coop_vnet.c       |  9 +++++----
+ dm/host/hle_net.c             |  4 ++--
+ dm/host/tests/t_net_eventfd.c |  5 +++++
+ 4 files changed, 21 insertions(+), 14 deletions(-)
+
+diff --git a/dm/host/coop.h b/dm/host/coop.h
+index 3432ff1..65b9e63 100644
+--- a/dm/host/coop.h
++++ b/dm/host/coop.h
+@@ -158,7 +158,8 @@ int coop_ldn_disconnect_reason(coop_node *n);
+ uint32_t coop_ldn_set_accept_policy(coop_node *n, int policy);
+ uint32_t coop_ldn_reject(coop_node *n, uint32_t ip);
+ 
+-// ---------- nn::socket on the virtual network. FreeBSD values throughout (Horizon's); results are >= 0 or -errno. Sockaddrs are BSD sockaddr_in
++// ---------- nn::socket on the virtual network. Horizon's bsd service mixes the two families: FreeBSD for sockaddrs, socket options, MSG_ and poll
++// flags, Linux for errno (EAGAIN 11: yuzu's and Ryujinx's bsd services answer the same) and fcntl's O_NONBLOCK (0x800). Results are >= 0 or -errno. Sockaddrs are BSD sockaddr_in
+ // (len, family, port and address in network order). Only AF_INET datagram sockets made while the LDN is initialized are virtual: coop_vnet_socket
+ // answers -ENETDOWN for anything else, and the HLE keeps its offline behaviour for descriptors coop_vnet_is rejects ----------
+ #define COOP_FD_BASE 0x100
+@@ -167,13 +168,13 @@ uint32_t coop_ldn_reject(coop_node *n, uint32_t ip);
+ #define COOP_EACCES 13
+ #define COOP_EINVAL 22
+ #define COOP_EMFILE 24
+-#define COOP_EAGAIN 35
+-#define COOP_EMSGSIZE 40
+-#define COOP_ENOPROTOOPT 42
+-#define COOP_EADDRINUSE 48
+-#define COOP_EADDRNOTAVAIL 49
+-#define COOP_ENETDOWN 50
+-#define COOP_ENETUNREACH 51
++#define COOP_EAGAIN 11
++#define COOP_EMSGSIZE 90
++#define COOP_ENOPROTOOPT 92
++#define COOP_EADDRINUSE 98
++#define COOP_EADDRNOTAVAIL 99
++#define COOP_ENETDOWN 100
++#define COOP_ENETUNREACH 101
+ #define COOP_POLLIN 0x1
+ #define COOP_POLLOUT 0x4
+ #define COOP_POLLNVAL 0x20
+diff --git a/dm/host/hle_coop_vnet.c b/dm/host/hle_coop_vnet.c
+index 5f2fa0d..0ef4b66 100644
+--- a/dm/host/hle_coop_vnet.c
++++ b/dm/host/hle_coop_vnet.c
+@@ -5,7 +5,7 @@
+ #include "coop_int.h"
+ #include <stdio.h>
+ 
+-// nn::socket's values (FreeBSD)
++// nn::socket's values: FreeBSD for options and flags, Linux for O_NONBLOCK and errno (coop.h)
+ #define V_SOCK_NONBLOCK 0x20000000
+ #define V_SOL_SOCKET 0xffff
+ #define V_SO_BROADCAST 0x20
+@@ -15,8 +15,9 @@
+ #define V_MSG_DONTWAIT 0x80
+ #define V_F_GETFL 3
+ #define V_F_SETFL 4
+-#define V_O_NONBLOCK 4
+-#define V_EDESTADDRREQ 39
++#define V_O_NONBLOCK 0x800   // Linux's, as nn::socket::FcntlFlag::O_NonBlock; FreeBSD's 4 is taken too
++#define V_O_NONBLOCK_BSD 4
++#define V_EDESTADDRREQ 89
+ #define V_LOG_FIRST 8      // datagrams logged per socket and direction, then every V_LOG_EVERY-th
+ #define V_LOG_EVERY 500
+ 
+@@ -125,7 +126,7 @@ int coop_vnet_fcntl(coop_node *n, int fd, int cmd, int v) {
+     cnode_lock(n);
+     vsock *s = get(n, fd); int r = s ? 0 : -COOP_EBADF;
+     if (s && cmd == V_F_GETFL) r = 2 | (s->nonblock ? V_O_NONBLOCK : 0);   // O_RDWR
+-    if (s && cmd == V_F_SETFL) s->nonblock = !!(v & V_O_NONBLOCK);
++    if (s && cmd == V_F_SETFL) s->nonblock = !!(v & (V_O_NONBLOCK | V_O_NONBLOCK_BSD));
+     cnode_unlock(n);
+     return r;
+ }
+diff --git a/dm/host/hle_net.c b/dm/host/hle_net.c
+index 17a81c8..d519538 100644
+--- a/dm/host/hle_net.c
++++ b/dm/host/hle_net.c
+@@ -56,8 +56,8 @@ static int mpsk_is(int s) { coop_node *c = dm_coop(); return c && coop_vnet_is(c
+ static long mpsk_ret(int64_t r) { if (r >= 0) return (long)r; t_skerr = (int)-r; return -1; }
+ // The first calls of each virtual-socket entry point and every failure but EAGAIN (64 lines), so a log shows how a game's transport starts and where it stops
+ #define SKT(call) ({ static _Atomic int k_; long r_ = (call); static _Atomic int f_; \
+-    if (atomic_fetch_add(&k_, 1) < 3) LOG("[coop] sock: the game calls %s(%d) -> %ld%s", __func__ + 5, s, r_, r_ < 0 ? " (failed)" : ""); \
+-    else if (r_ < 0 && t_skerr != 35 && atomic_fetch_add(&f_, 1) < 16) LOG("[coop] sock: %s(%d) failed: errno %d", __func__ + 5, s, t_skerr); \
++    if (atomic_fetch_add(&k_, 1) < 3) { if (r_ < 0) LOG("[coop] sock: the game calls %s(%d) -> -1, errno %d", __func__ + 5, s, t_skerr); else LOG("[coop] sock: the game calls %s(%d) -> %ld", __func__ + 5, s, r_); } \
++    else if (r_ < 0 && t_skerr != COOP_EAGAIN && atomic_fetch_add(&f_, 1) < 16) LOG("[coop] sock: %s(%d) failed: errno %d", __func__ + 5, s, t_skerr); \
+     r_; })
+ int mpsk_errno(void) { return t_skerr; }
+ int mpsk_socket(int fam, int type, int proto) {
+diff --git a/dm/host/tests/t_net_eventfd.c b/dm/host/tests/t_net_eventfd.c
+index 0b79475..d526857 100644
+--- a/dm/host/tests/t_net_eventfd.c
++++ b/dm/host/tests/t_net_eventfd.c
+@@ -83,6 +83,11 @@ int main(void) {
+     assert(h_sk_Poll(mix, 2, 1000) == 1 && mix[0].revents == 0 && mix[1].revents == SK_POLLIN);
+     sk_pollfd out = {vs, SK_POLLOUT, 0};
+     assert(h_nsk_Poll(&out, 1, 0) == 1 && out.revents == SK_POLLOUT);   // a virtual socket is always writable
++    // Nothing queued and MSG_DONTWAIT: -1 with Horizon's EAGAIN, Linux's 11 (Animal Crossing's Pia took FreeBSD's 35 as a failure: error 2618-0006)
++    char rb[8]; uint8_t from[16]; unsigned fl = sizeof from;
++    assert(h_sk_RecvFrom(vs, rb, sizeof rb, 0x80, from, &fl) == -1 && h_sk_GetLastError() == 11);
++    assert(h_sk_Fcntl(vs, 4, 0x800) == 0 && h_sk_Fcntl(vs, 3, 0) == (2 | 0x800));   // O_NONBLOCK is Linux's 0x800
++    assert(h_sk_RecvFrom(vs, rb, sizeof rb, 0, from, &fl) == -1 && h_sk_GetLastError() == 11);
+     assert(h_sk_Close(vs) == 0 && h_sk_Close(ef) == 0);
+     assert(h_sk_Close(vs) == -1);   // closed already: neither virtual nor an event descriptor
+     coop_ldn_finalize(g_coop);
