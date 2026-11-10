@@ -63,7 +63,8 @@ final class ManageMenuTests: IsolatedDefaultsTestCase {
         let t: (String) -> String = { L10n.string($0, .en) }
         XCTAssertEqual(BuildFiles.menuTitle(store, game: id, t: t), "Remove build files", "not measured yet: the item without a size")
         await store.refresh([BuildFilesStore.Game(id: id, name: "Zelda", folder: "/x_build")]).value
-        XCTAssertEqual(BuildFiles.menuTitle(store, game: id, t: t), "Remove build files (31 GB)")
+        XCTAssertEqual(BuildFiles.menuTitle(store, game: id, t: t), "Remove build files (\(BuildFilesCard.bytes(31_000_000_000)))",
+                       "the size as the Mac's region writes it: 31 GB, 31GB on a Korean Mac")
     }
 
     func testGameReadyOnMacAndDeviceOffersBothLaunchDestinations() throws {
