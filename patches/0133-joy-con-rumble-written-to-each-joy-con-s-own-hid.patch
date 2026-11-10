@@ -1,0 +1,320 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: exynos6694 <azsx6694@naver.com>
+Date: Wed, 11 Nov 2026 02:57:08 +0900
+Subject: [PATCH] Joy-Con rumble written to each Joy-Con's own HID device
+
+A split Joy-Con pair played both players' vibration faintly on one Joy-Con and none on the other. GameController offers a
+Switch Joy-Con pair the localities "JoyCon (L)", "JoyCon (R)", All and Default (macOS 27.2), not GCHapticsLocalityLeftHandle /
+RightHandle, so a split half asked for a handle fell back to the pair's default engine, which plays on one Joy-Con only; and
+GameController's Joy-Con engines are weak even on the right locality.
+
+The Mac controller layer already holds each Joy-Con's HID device (pad_joycon_mac.h, for the IMU). Its rumble route now writes
+HD rumble there, as SDL's hidapi Switch driver does: output report 0x10 with the actuator's four bytes (joycon_rumble_bytes:
+the high band's 9-bit frequency and amplitude, the low band's frequency and 9-bit amplitude, the reverse-engineered amplitude
+curve, frequencies clamped to each band, the neutral 00 01 40 40 for silence). The left Joy-Con plays motor 0 and the right one
+motor 1, whether the pair is one player or each half a player of its own; the native output's 40 ms refresh keeps it going.
+The route object retains the devices it writes, so a pair that changes replaces the route before a removed half's device goes,
+and the merged player's route is made again when its pair changes under it.
+
+GameController's route (DM_JOYCON_SPLIT=0) also takes a handle by the controller's own name (handle_locality): a split half
+gets its Joy-Con, and the pair as one player gets an engine per Joy-Con, merged onto All rather than Default when the server
+has no advanced players.
+
+Tests: t_pad_hid (rumble bytes), t_controllers_mac (pair, split, removed half: report 0x10 and the motor each Joy-Con plays),
+t_haptics_apple (a split pair and the whole pair with the Joy-Con's locality names).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: pending
+Reason: Split Joy-Con (Switch 1) pairs vibrated on one Joy-Con only through GameController; HD rumble over each Joy-Con's HID device plays each side
+Issue: none yet (exynos6694/NX2Apple-muti feature/local-wireless)
+
+---
+ dm/host/controllers_mac.m         | 38 +++++++++++++++++++++++--------
+ dm/host/haptics_apple.m           | 30 +++++++++++++++++-------
+ dm/host/pad_joycon.h              | 26 +++++++++++++++++++++
+ dm/host/tests/t_controllers_mac.m | 21 +++++++++++++----
+ dm/host/tests/t_haptics_apple.m   | 24 +++++++++++++++++++
+ dm/host/tests/t_pad_hid.c         | 10 ++++++++
+ 6 files changed, 127 insertions(+), 22 deletions(-)
+
+diff --git a/dm/host/controllers_mac.m b/dm/host/controllers_mac.m
+index 7d6d447..44b6ee6 100644
+--- a/dm/host/controllers_mac.m
++++ b/dm/host/controllers_mac.m
+@@ -164,6 +164,12 @@ static int32_t stronger(int32_t a, int32_t b) { return abs(a) >= abs(b) ? a : b;
+ // IOHID output runs on the haptics queue; removal synchronously stops that route
+ // before closing the device. Kept as a seam for packet/lifetime regression tests.
+ static IOReturn (*steam_write)(IOHIDDeviceRef,IOHIDReportType,CFIndex,const uint8_t *,CFIndex)=IOHIDDeviceSetReport;
++static IOReturn (*joycon_rumble_write)(IOHIDDeviceRef,IOHIDReportType,CFIndex,const uint8_t *,CFIndex)=IOHIDDeviceSetReport;
++// A Joy-Con route's devices (controller_route_haptics): retained here so a half freed by joycon_removed is never written through a dangling pad
++@interface DMJoyConRumble : NSObject { @public IOHIDDeviceRef hid[2]; int right[2]; uint8_t seq[2]; BOOL warned; } @end
++@implementation DMJoyConRumble
++- (void)dealloc { for(int i=0;i<2;i++) if(hid[i]) CFRelease(hid[i]); }
++@end
+ static void s2_sink(int player, BOOL on) {
+     if(player<0 || player>=DM_PLAYERS || g_s2_sink[player]==on) return;
+     g_s2_sink[player]=on; dm_haptics_apple_set_sink(player,on ? dm_switch2_rumble : NULL);   // its rumble goes over Bluetooth, not to a Core Haptics engine
+@@ -182,17 +188,29 @@ static void controller_route_haptics(DMController *d, int player) {
+         }
+     });
+     else if(d && d->joycon) {
+-        GCController *pair=nil;
+-        for(GCController *c in GCController.controllers) if(joycon_is_gc_controller(c)) {
+-            if(c.motion.sensorsRequireManualActivation) c.motion.sensorsActive=YES;
+-            if(!pair && c.haptics) pair=c;
+-        }
+-        if(g_merge || d->joycon->partner) dm_haptics_apple_controller(player,pair);
+-        else dm_haptics_apple_controller_locality(player,pair,d->joycon->st.pid==JOYCON_PID_L ? GCHapticsLocalityLeftHandle : GCHapticsLocalityRightHandle);
++        for(GCController *c in GCController.controllers) if(joycon_is_gc_controller(c) && c.motion.sensorsRequireManualActivation) c.motion.sensorsActive=YES;
++        // HD rumble written to each Joy-Con's own HID device, as SDL's hidapi driver does: GameController's engines for a Joy-Con pair
++        // ("JoyCon (L)", "JoyCon (R)", All) played every player's vibration faintly on one Joy-Con. The left Joy-Con plays motor 0 and
++        // the right one motor 1, whether the pair is one player or each half is a player of its own. A new route object per call holds
++        // the devices it writes, so a pair that changes (split, join, a half removed) replaces the route before the old device goes.
++        DMJoyConRumble *r=[DMJoyConRumble new];
++        joycon_pad *halves[2]={d->joycon,d->joycon->partner};
++        for(int i=0;i<2;i++) if(halves[i] && halves[i]->hid) { r->hid[i]=(IOHIDDeviceRef)CFRetain(halves[i]->hid); r->right[i]=halves[i]->st.pid==JOYCON_PID_R; }
++        dm_haptics_apple_output(player,r,^(dm_haptic_state state,float gain) {
++            for(int i=0;i<2;i++) if(r->hid[i]) {
++                const dm_vibration *m=&state.motor[r->right[i]];
++                uint8_t rep[49]={0x10,(uint8_t)(r->seq[i]++ & 0x0f)};
++                joycon_rumble_bytes(dm_haptics_apple_controller_intensity(m->amplitude_low*gain),m->frequency_low,
++                                    dm_haptics_apple_controller_intensity(m->amplitude_high*gain),m->frequency_high,rep+2);
++                memcpy(rep+6,rep+2,4);   // one actuator per Joy-Con: both halves of the report carry its values
++                IOReturn e=joycon_rumble_write(r->hid[i],kIOHIDReportTypeOutput,0x10,rep,sizeof rep);
++                if(e!=kIOReturnSuccess && !r->warned) { fprintf(stderr,"[RED] Joy-Con rumble failed (0x%x)\n",e); r->warned=YES; }
++            }
++        });
+     } else dm_haptics_apple_controller(player,d.controller);
+ }
+ static BOOL controller_has_haptics(DMController *d) {
+-    if(d->device || d->s2 || d.controller.haptics.supportedLocalities.count) return YES;
++    if(d->device || d->s2 || d->joycon || d.controller.haptics.supportedLocalities.count) return YES;
+     if(d->joycon) for(GCController *c in GCController.controllers)
+         if(joycon_is_gc_controller(c) && c.haptics.supportedLocalities.count) return YES;
+     return NO;
+@@ -557,7 +575,9 @@ static void joycon_pair_changed(joycon_pad *pri) {
+     if(d->slot>=0) {
+         dm_motion_clear_hid(g_merge ? 0 : d->slot);
+         if(!g_merge) dm_joy_attach(d->slot,joycon_pad_sides(pri));
+-        if(g_merge) controller_merge_haptics(); else controller_route_haptics(d,d->slot);
++        // The merged player's route holds this pad's Joy-Con devices: a pair that changed under it is routed again
++        if(g_merge) { if(g_merge_haptics_source==d) controller_route_haptics(d,0); else controller_merge_haptics(); }
++        else controller_route_haptics(d,d->slot);
+     }
+     joycon_read(pri);
+     controller_panel_refresh();
+diff --git a/dm/host/haptics_apple.m b/dm/host/haptics_apple.m
+index 6228394..f686e71 100644
+--- a/dm/host/haptics_apple.m
++++ b/dm/host/haptics_apple.m
+@@ -382,6 +382,16 @@ static void default_controller(int p, GCDeviceHaptics *h, NSTimeInterval retryAf
+     add_engine(p, -1, @"controller default", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:GCHapticsLocalityDefault]; });
+     channels[p].lastObject.retryAfter = retryAfter;
+ }
++// A handle's locality as the controller names it: GameController offers a Switch Joy-Con pair "JoyCon (L)" and "JoyCon (R)" (macOS 27.2),
++// not GCHapticsLocalityLeftHandle / RightHandle, so a split half asked for a handle got the pair's default engine, which plays on one Joy-Con
++// only: both players' vibration on one side and none on the other. nil when the controller has no such handle.
++static GCHapticsLocality handle_locality(NSSet *localities, int right) {
++    GCHapticsLocality want = right ? GCHapticsLocalityRightHandle : GCHapticsLocalityLeftHandle;
++    if ([localities containsObject:want]) return want;
++    NSString *suffix = right ? @"(R)" : @"(L)";
++    for (NSString *l in localities) if ([l hasSuffix:suffix]) return l;
++    return nil;
++}
+ static void configure(int p, GCController *controller, GCHapticsLocality locality) {
+     for (DmRumbleChannel *c in channels[p]) [c stop];
+     channels[p] = [NSMutableArray new];
+@@ -393,10 +403,12 @@ static void configure(int p, GCController *controller, GCHapticsLocality localit
+     if (controller) {
+         GCDeviceHaptics *h = controller.haptics;
+         NSSet *localities = h.supportedLocalities;
+-        if (locality && [localities containsObject:locality]) {
+-            NSString *label = [locality isEqualToString:GCHapticsLocalityLeftHandle] ? @"controller left handle" :
+-                              ([locality isEqualToString:GCHapticsLocalityRightHandle] ? @"controller right handle" : @"controller handle");
+-            add_engine(p, -1, label, ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:locality]; });
++        int leftH = locality && [locality isEqualToString:GCHapticsLocalityLeftHandle], rightH = locality && [locality isEqualToString:GCHapticsLocalityRightHandle];
++        GCHapticsLocality use = !locality ? nil : [localities containsObject:locality] ? locality : (leftH || rightH) ? handle_locality(localities, rightH) : nil;
++        GCHapticsLocality left = handle_locality(localities, 0), right = handle_locality(localities, 1);
++        if (use) {
++            NSString *label = leftH ? @"controller left handle" : (rightH ? @"controller right handle" : @"controller handle");
++            add_engine(p, -1, label, ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:use]; });
+             __weak NSArray *route = channels[p];
+             for (DmRumbleChannel *c in channels[p]) c.fallback = ^(NSTimeInterval retryAfter) {
+                 if (!route || channels[p] != route) return;
+@@ -406,9 +418,9 @@ static void configure(int p, GCController *controller, GCHapticsLocality localit
+                 dm_haptics_route(p, 1);
+                 fprintf(stderr, "haptics: player %d retrying with the default controller locality\n", p + 1);
+             };
+-        } else if ([localities containsObject:GCHapticsLocalityLeftHandle] && [localities containsObject:GCHapticsLocalityRightHandle]) {
+-            add_engine(p, 0, @"controller left handle", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:GCHapticsLocalityLeftHandle]; });
+-            add_engine(p, 1, @"controller right handle", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:GCHapticsLocalityRightHandle]; });
++        } else if (left && right) {
++            add_engine(p, 0, @"controller left handle", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:left]; });
++            add_engine(p, 1, @"controller right handle", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:right]; });
+             // Advertised handle localities can still fail to start. Fall back to the standard
+             // controller engine, once, rather than keeping two unusable helper connections.
+             __weak NSArray *route = channels[p];
+@@ -425,7 +437,9 @@ static void configure(int p, GCController *controller, GCHapticsLocality localit
+                 if (!route || channels[p] != route) return;
+                 for (DmRumbleChannel *old in channels[p]) [old stop];
+                 channels[p] = [NSMutableArray new];
+-                GCHapticsLocality both = [localities containsObject:GCHapticsLocalityHandles] ? GCHapticsLocalityHandles : GCHapticsLocalityDefault;
++                // A Joy-Con pair offers no Handles locality, and its default plays on one Joy-Con: All reaches both
++                GCHapticsLocality both = [localities containsObject:GCHapticsLocalityHandles] ? GCHapticsLocalityHandles :
++                                         [left isEqualToString:GCHapticsLocalityLeftHandle] || ![localities containsObject:GCHapticsLocalityAll] ? GCHapticsLocalityDefault : GCHapticsLocalityAll;
+                 add_engine(p, -1, @"controller handles", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:both]; });
+                 channels[p].lastObject.simple = YES;
+                 dm_haptics_route(p, 1);
+diff --git a/dm/host/pad_joycon.h b/dm/host/pad_joycon.h
+index 055da08..41e80fb 100644
+--- a/dm/host/pad_joycon.h
++++ b/dm/host/pad_joycon.h
+@@ -18,6 +18,32 @@
+ #define JOYCON_REPORT_0x30     0x30
+ #define JOYCON_REPORT_MIN_LEN  12
+ #define JOYCON_STICK_CENTER    2048
++
++// HD rumble for one Joy-Con's actuator, as the output reports 0x01 and 0x10 carry it (4 bytes; dekuNukem's Nintendo_Switch_Reverse_Engineering,
++// SDL's hidapi Switch driver): the high band's frequency (9 bits) and amplitude, the low band's frequency and amplitude (9 bits). The amplitude
++// code is the reverse-engineered curve, 100 (0xc8 in the high band) at 1.0; frequencies are clamped to what each band encodes. Silence is the
++// neutral 00 01 40 40, which the existing reports send.
++static inline int joycon_rumble_amp_code(float a) {
++    if (!(a > 0)) return 0;
++    if (a > 1) a = 1;
++    float e = a > 0.23f ? log2f(a * 8.7f) * 32.f : a > 0.12f ? log2f(a * 17.f) * 16.f : a / 0.12f * 16.f;
++    int c = (int)lroundf(e);
++    return c < 1 ? 1 : c > 100 ? 100 : c;
++}
++static inline void joycon_rumble_bytes(float amp_low, float freq_low, float amp_high, float freq_high, uint8_t out[4]) {
++    int hc = joycon_rumble_amp_code(amp_high), lc = joycon_rumble_amp_code(amp_low);
++    if (!hc && !lc) { out[0] = 0x00; out[1] = 0x01; out[2] = 0x40; out[3] = 0x40; return; }
++    float fh = freq_high > 0 ? fminf(fmaxf(freq_high, 81.75f), 1252.f) : 320.f;
++    float fl = freq_low > 0 ? fminf(fmaxf(freq_low, 40.875f), 626.f) : 160.f;
++    int hf = ((int)lroundf(log2f(fh / 10.f) * 32.f) - 0x60) * 4, lf = (int)lroundf(log2f(fl / 10.f) * 32.f) - 0x40;
++    hf = hf < 0 ? 0 : hf > 0x1fc ? 0x1fc : hf;
++    lf = lf < 1 ? 1 : lf > 0x7f ? 0x7f : lf;
++    unsigned lamp = (0x40u + (unsigned)(lc >> 1)) | ((unsigned)(lc & 1) << 15);
++    out[0] = (uint8_t)(hf & 0xff);
++    out[1] = (uint8_t)((hc * 2) | ((hf >> 8) & 1));
++    out[2] = (uint8_t)(lf | ((lamp >> 8) & 0x80));
++    out[3] = (uint8_t)(lamp & 0xff);
++}
+ #define JOYCON_STICK_RADIUS    1400.0f
+ #define JOYCON_STICK_DZ        0.12f
+ 
+diff --git a/dm/host/tests/t_controllers_mac.m b/dm/host/tests/t_controllers_mac.m
+index 5eab427..775878e 100644
+--- a/dm/host/tests/t_controllers_mac.m
++++ b/dm/host/tests/t_controllers_mac.m
+@@ -286,13 +286,21 @@ static void test_split_joycon_routing(void) {
+         joycon_init(&left.st,JOYCON_PID_L); joycon_init(&right.st,JOYCON_PID_R);
+         left.primary=right.primary=1; joycon_update_name(&left); joycon_update_name(&right);
+         left.next=&right; g_joycons=&left;
++        left.hid=(IOHIDDeviceRef)CFSTR("left Joy-Con"); right.hid=(IOHIDDeviceRef)CFSTR("right Joy-Con"); joycon_rumble_write=fake_write;
++        // Full rumble on motor 1 only: 320 Hz high band and 160 Hz low band at amplitude 1.0 encode as 00 c9 40 72 (motor 0 silent: 00 01 40 40)
++        dm_haptic_state rumble_right={0}; rumble_right.motor[1]=(dm_vibration){1,160,1,320};
++        static const uint8_t full[4]={0x00,0xc9,0x40,0x72}, neutral[4]={0x00,0x01,0x40,0x40};
+         // Default connection pairs Left + Right onto one slot (sides == 3) so games see JoyDual or auto-split JoyLeft + JoyRight
+         joycon_attach(&left);
+         left.partner=&right; right.partner=&left; left.primary=1; right.primary=0;
+         joycon_update_name(&left); joycon_update_name(&right); joycon_pair_changed(&left);
+         DMController *p=controller_for_joycon(&left);
+         assert(p && controller_for_joycon(&right)==p && p->slot==0 && g_devices.count==1 && players==1u);
+-        assert(rumble[0]==pair && !rumble_locality[0] && pair.testMotion.sensorsActive);
++        // The pair's rumble goes to the Joy-Cons' own HID devices (report 0x10), not GameController's engines
++        assert(raw_output[0] && !rumble[0] && !rumble_locality[0] && pair.testMotion.sensorsActive);
++        written_n=0; raw_output[0](rumble_right,1);
++        assert(written_type==kIOHIDReportTypeOutput && written_id==0x10 && written_n==49 && written[0]==0x10);
++        assert(!memcmp(written+2,full,4) && !memcmp(written+6,full,4));   // the right Joy-Con, written last, plays motor 1
+         if(!merged) assert(joy_sides[0]==3u);
+         left.st.joy_buttons=DM_BTN_DOWN; left.st.joy_sx=-.5f;
+         right.st.joy_buttons=DM_BTN_A; right.st.joy_sx=.5f;
+@@ -307,16 +315,19 @@ static void test_split_joycon_routing(void) {
+         joycon_check_gesture(&left,1000+JOYCON_GESTURE_NS);
+         DMController *l=controller_for_joycon(&left), *r=controller_for_joycon(&right);
+         assert(l && r && l!=r && l->slot==0 && r->slot==1 && players==(merged ? 1u : 3u) && hid_motion_clears[0]>split_clears);
+-        assert(rumble[0]==pair);
++        assert(raw_output[0] && !rumble[0]);
+         if(!merged) {
+             assert(joy_sides[0]==1u && joy_sides[1]==2u);
+-            assert(rumble[1]==pair && [rumble_locality[0] isEqual:GCHapticsLocalityLeftHandle] && [rumble_locality[1] isEqual:GCHapticsLocalityRightHandle]);
++            // Each half writes its own Joy-Con: the left one motor 0 (silent here), the right one motor 1
++            assert(raw_output[1] && !rumble[1] && !rumble_locality[0] && !rumble_locality[1]);
++            raw_output[0](rumble_right,1); assert(written_id==0x10 && !memcmp(written+2,neutral,4));
++            raw_output[1](rumble_right,1); assert(written_id==0x10 && !memcmp(written+2,full,4));
+         }
+         DMController *steam=[DMController new]; steam.name=@"Steam Controller"; steam.model=@"Valve Triton";
+         steam->device=(IOHIDDeviceRef)CFRetain(CFSTR("coexisting Steam")); steam->connected=YES; steam_write=fake_write;
+         controller_load_map(steam); [g_devices addObject:steam]; controller_connect(steam);
+         controllers_reconcile(@[pair]); assert(steam->slot==2 && g_devices.count==3 && players==(merged ? 1u : 7u));
+-        assert(rumble[0]==pair && (merged || raw_output[2]));
++        assert(raw_output[0] && (merged || raw_output[2]));
+         controller_disconnect(steam); [g_devices removeObject:steam];
+         uint8_t report[49]={0x30}; report[1]=3; report[14]=16;
+         unsigned before=hid_motion_samples[merged ? 0 : r->slot];
+@@ -347,7 +358,7 @@ static void test_split_joycon_routing(void) {
+         unsigned unpair_clears=hid_motion_clears[0];
+         joycon_unpair_removed(&left,&right);
+         assert(!left.partner && !right.partner && controller_for_joycon(&right)->slot==0 && hid_motion_clears[0]>unpair_clears);
+-        if(!merged) assert(joy_sides[0]==2u && [rumble_locality[0] isEqual:GCHapticsLocalityRightHandle]);
++        if(!merged) { assert(joy_sides[0]==2u && raw_output[0]); raw_output[0](rumble_right,1); assert(!memcmp(written+2,full,4)); }
+         joycon_detach(&right); assert(!g_devices.count && !players && !received[0]);
+         g_joycons=NULL;
+         g_joycon_split=0; controllers_reconcile(@[pair]); assert(g_devices.count==1);
+diff --git a/dm/host/tests/t_haptics_apple.m b/dm/host/tests/t_haptics_apple.m
+index 964dbc9..931f349 100644
+--- a/dm/host/tests/t_haptics_apple.m
++++ b/dm/host/tests/t_haptics_apple.m
+@@ -516,6 +516,30 @@ int main(void) { @autoreleasepool {
+     dm_haptics_apple_controller_locality(0,(id)jc,GCHapticsLocalityLeftHandle); drain();
+     assert(nativeStops && !outputOwners[0] && !nativeOutputs[0] && channels[0].count==1 && [controllerLocalities[0] isEqual:GCHapticsLocalityLeftHandle]);
+     dm_haptics_apple_controller(0, nil); dm_haptics_apple_controller(1, nil); drain();
++    // A Switch Joy-Con pair names its handles "JoyCon (L)" and "JoyCon (R)" (macOS 27.2): each split half takes its own Joy-Con,
++    // not the pair's default locality, which plays on one Joy-Con only
++    NSSet *jcPair = [NSSet setWithObjects:GCHapticsLocalityAll, GCHapticsLocalityDefault, @"JoyCon (L)", @"JoyCon (R)", nil];
++    TestController *jc1 = [TestController new]; jc1.haptics = [TestHaptics new]; jc1.haptics.supportedLocalities = jcPair;
++    dm_haptics_apple_controller_locality(0, (id)jc1, GCHapticsLocalityLeftHandle);
++    dm_haptics_apple_controller_locality(1, (id)jc1, GCHapticsLocalityRightHandle);
++    drain();
++    assert(channels[0].count == 1 && channels[1].count == 1);
++    dm_haptics_send(ujc, 4); drain();
++    assert(jc1.haptics.attempts == 2);
++    assert([jc1.haptics.requestedLocalities[0] isEqual:@"JoyCon (L)"] && [jc1.haptics.requestedLocalities[1] isEqual:@"JoyCon (R)"]);
++    dm_vibration_update stop4[] = {{0, 0, {0}}, {0, 1, {0}}, {1, 0, {0}}, {1, 1, {0}}};
++    dm_haptics_send(stop4, 4); drain();
++    dm_haptics_apple_controller(0, nil); dm_haptics_apple_controller(1, nil); drain();
++    // The pair as one player: an engine per Joy-Con, and with no advanced players both motors on All, which reaches both Joy-Cons
++    TestController *jcWhole = [TestController new]; jcWhole.haptics = [TestHaptics new]; jcWhole.haptics.noAdvanced = YES;
++    jcWhole.haptics.supportedLocalities = jcPair;
++    dm_haptics_apple_controller(0, (id)jcWhole); drain();
++    assert(channels[0].count == 2);
++    send_pair(0.3, 0.4); send_pair(0.3, 0.4); drain();
++    assert([jcWhole.haptics.requestedLocalities.firstObject isEqual:@"JoyCon (L)"]);
++    assert([jcWhole.haptics.requestedLocalities.lastObject isEqual:GCHapticsLocalityAll]);
++    send_pair(0, 0); drain();
++    dm_haptics_apple_controller(0, nil); drain();
+     assert(ds4_crc((const uint8_t *)"123456789", 9) == 0xCBF43926u);   // the report's CRC32 (IEEE, reflected)
+     dm_haptics_apple_shutdown();
+     puts("Apple haptics: channels, pulses, idle release, startup handlers, engine replacement, backoff, stale callbacks, plain players, level cutoff and the DualShock 4 route passed");
+diff --git a/dm/host/tests/t_pad_hid.c b/dm/host/tests/t_pad_hid.c
+index e2d98d9..28b22d2 100644
+--- a/dm/host/tests/t_pad_hid.c
++++ b/dm/host/tests/t_pad_hid.c
+@@ -161,6 +161,16 @@ int main(void) {
+     h.axis[PH_ACCEL] = pad_hid_norm(200, 0, 255); CHECK(pad_hid_buttons(&h) & DM_BTN_ZR);
+     CHECK(pad_dupes_want(1, 1, 1, 0) == 0);   // one unplugged: back to GameController
+     test_joycon_split();
++    // Joy-Con HD rumble bytes: silence is the neutral 00 01 40 40; full amplitude at 320 / 160 Hz is 00 c9 40 72; the high band's
++    // 9-bit frequency and the low band's 9-bit amplitude spill into the next byte; frequencies outside a band are clamped
++    uint8_t rb[4];
++    joycon_rumble_bytes(0, 160, 0, 320, rb); CHECK(rb[0] == 0x00 && rb[1] == 0x01 && rb[2] == 0x40 && rb[3] == 0x40);
++    joycon_rumble_bytes(1, 160, 1, 320, rb); CHECK(rb[0] == 0x00 && rb[1] == 0xc9 && rb[2] == 0x40 && rb[3] == 0x72);
++    joycon_rumble_bytes(0, 160, 1, 160, rb); CHECK(rb[0] == 0x80 && rb[1] == 0xc8 && rb[3] == 0x40);       // 160 Hz high band: code 0x80, amp 0xc8
++    joycon_rumble_bytes(1, 5000, 0, 5000, rb); CHECK(rb[0] == 0xfc && (rb[1] & 1) && (rb[2] & 0x7f) == 0x7f);   // clamped to 1252 / 626 Hz
++    CHECK(joycon_rumble_amp_code(0) == 0 && joycon_rumble_amp_code(-1) == 0 && joycon_rumble_amp_code(2) == 100);
++    CHECK(joycon_rumble_amp_code(0.01f) == 1 && joycon_rumble_amp_code(0.5f) > joycon_rumble_amp_code(0.2f));
++    joycon_rumble_bytes(0.5f, 160, 0, 320, rb); CHECK(rb[1] == 0x01 && (rb[2] & 0x80) == ((joycon_rumble_amp_code(0.5f) & 1) << 7));
+     printf("t_pad_hid: %d checks, %d failed\n", checks, fails);
+     return fails != 0;
+ }
