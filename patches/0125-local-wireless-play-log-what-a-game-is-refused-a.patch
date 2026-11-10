@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: exynos6694 <azsx6694@naver.com>
+Date: Mon, 9 Nov 2026 23:06:55 +0900
+Subject: [PATCH] Local wireless play: log what a game is refused, and serve
+ the accept filter and controller restriction
+
+Animal Crossing: New Horizons 3.0.3 hosting through the relay created its network, read the NetworkInfo
+and then showed an error (nn::err::ShowError with an ErrorResultVariant), which ends Dodo's talk with
+no message on the host. Nothing in the log said which call failed. Now:
+- every ldn entry point the coop module answers logs its first three calls and every refusal (64 lines),
+  so a log shows the order a game drives local play in and where it stops;
+- the ErrorResultVariant hook logs its Result (or error code) and the caller as module+offset;
+- AddAcceptFilterEntry (both overloads) and ClearAcceptFilter succeed with co-op on (the filter is not
+  kept: anyone with the room code joins), SetWirelessControllerRestriction succeeds (the host's
+  controllers are not on a local wireless radio), and the Connect overload without a ConnectOption goes
+  to the coop module. Before, these failed or went to the SDK's own client, which the host never opens.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: pending
+Reason: Local wireless play: diagnostics for refused calls and the ldn calls Animal Crossing hosts with
+Issue: none yet (exynos6694/NX2Apple-muti feature/local-wireless)
+---
+ dm/host/hle_offline.c | 38 +++++++++++++++++++++++++++++++++-----
+ 1 file changed, 33 insertions(+), 5 deletions(-)
+
+diff --git a/dm/host/hle_offline.c b/dm/host/hle_offline.c
+index dc9a08c..7d5f336 100644
+--- a/dm/host/hle_offline.c
++++ b/dm/host/hle_offline.c
+@@ -51,10 +51,19 @@ coop_node *dm_coop(void) {   // the process's coop node when DM_COOP is set (and
+     atomic_store(&node, n); atomic_store(&done, 1);
+     return n;
+ }
+-#define COOP(call) do { coop_node *c_ = dm_coop(); if (c_) return call; } while (0)
++// A call the coop module refuses is worth a line: a game that gets one usually gives up on local play there (Animal Crossing shows an error and ends Dodo's talk)
++static uint32_t coop_said(const char *what, uint32_t r) {
++    static _Atomic int lines;
++    if (r && atomic_fetch_add(&lines, 1) < 64) LOG("[coop] ldn: %s refused: %#x", what, r);
++    return r;
++}
++// and the first calls of each entry point, so a log shows the order a game drives local play in
++#define COOP(call) do { coop_node *c_ = dm_coop(); if (c_) { static _Atomic int k_; if (atomic_fetch_add(&k_, 1) < 3) LOG("[coop] ldn: the game calls %s", __func__ + 2); \
++                                                         return coop_said(__func__ + 2, call); } } while (0)
++#define COOPV(call) do { coop_node *c_ = dm_coop(); if (c_) return call; } while (0)   // a value, not a Result
+ HLE_FORCE("_ZN2nn3ldn10InitializeEv", "local wireless (coop / cut): initialization fails", Result, h_ldn_Init, void) { COOP(coop_ldn_initialize(c_)); return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn8FinalizeEv", "local wireless (coop / cut)", void, h_ldn_Fini, void) { coop_node *c = dm_coop(); if (c) coop_ldn_finalize(c); }
+-HLE_FORCE("_ZN2nn3ldn8GetStateEv", "local wireless (coop / cut): state 0 (none)", int, h_ldn_State, void) { COOP(coop_ldn_state(c_)); return 0; }
++HLE_FORCE("_ZN2nn3ldn8GetStateEv", "local wireless (coop / cut): state 0 (none)", int, h_ldn_State, void) { COOPV(coop_ldn_state(c_)); return 0; }
+ HLE_FORCE("_ZN2nn3ldn22AttachStateChangeEventEPNS_2os15SystemEventTypeE", "local wireless state event: bound; the coop module fires it on every state or network change, else never", void, h_ldn_Attach, void *ev) { hle_bind_system_event(ev, 0); atomic_store(&g_ldn_attached, ev); (void)g_ev_ldn; }
+ HLE_FORCE("_ZN2nn3ldn11OpenStationEv", "local wireless (coop / cut)", Result, h_ldn_OpenSta, void) { COOP(coop_ldn_open_station(c_)); return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn12CloseStationEv", "local wireless (coop / cut)", Result, h_ldn_CloseSta, void) { COOP(coop_ldn_close_station(c_)); return RES_FAIL; }
+@@ -70,6 +79,9 @@ HLE_FORCE("_ZN2nn3ldn20CreateNetworkPrivateERKNS0_13NetworkConfigERKNS0_14Securi
+           Result, h_ldn_CreateP, const void *a, const void *b, const void *c, const void *d, int n, const void *e) { (void)a; (void)b; (void)c; (void)d; (void)n; (void)e; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn7ConnectERKNS0_11NetworkInfoERKNS0_14SecurityConfigERKNS0_10UserConfigEiNS0_13ConnectOptionE", "local wireless (coop / cut)", Result, h_ldn_Connect,
+           const void *a, const void *b, const void *c, int v, int o) { COOP(coop_ldn_connect(c_, a, b, c, v, o)); (void)a; (void)b; (void)c; (void)v; (void)o; return RES_FAIL; }
++// The overload without a ConnectOption (option 0)
++HLE_FORCE("_ZN2nn3ldn7ConnectERKNS0_11NetworkInfoERKNS0_14SecurityConfigERKNS0_10UserConfigEi", "local wireless (coop / cut)", Result, h_ldn_Connect4,
++          const void *a, const void *b, const void *c, int v) { COOP(coop_ldn_connect(c_, a, b, c, v, 0)); (void)a; (void)b; (void)c; (void)v; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn14ConnectPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_17SecurityParameterERKNS0_10UserConfigEiNS0_13ConnectOptionE", "local wireless (coop / cut)",
+           Result, h_ldn_ConnectP, const void *a, const void *b, const void *c, const void *d, int v, int o) { (void)a; (void)b; (void)c; (void)d; (void)v; (void)o; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn14GetNetworkInfoEPNS0_11NetworkInfoE", "local wireless (coop / cut)", Result, h_ldn_NetInfo, void *o) { COOP(coop_ldn_network_info(c_, o)); (void)o; return RES_FAIL; }
+@@ -82,8 +94,16 @@ HLE_FORCE("_ZN2nn3ldn14GetNetworkInfoEPNS0_11NetworkInfoEPNS0_16NodeLatestUpdate
+ HLE_FORCE("_ZN2nn3ldn14GetIpv4AddressEPNS0_11Ipv4AddressEPNS0_10SubnetMaskE", "local wireless (coop / cut)", Result, h_ldn_Ip, uint32_t *a, uint32_t *m) { COOP(coop_ldn_ipv4(c_, a, m)); if (a) *a = 0; if (m) *m = 0; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn20GetSecurityParameterEPNS0_17SecurityParameterE", "local wireless (coop / cut)", Result, h_ldn_SecPrm, void *o) { COOP(coop_ldn_security_parameter(c_, o)); (void)o; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn16SetAdvertiseDataEPKvm", "local wireless (coop / cut)", Result, h_ldn_Adv, const void *d, uint64_t n) { COOP(coop_ldn_set_advertise(c_, d, n)); (void)d; (void)n; return RES_FAIL; }
+-HLE_FORCE("_ZN2nn3ldn19GetDisconnectReasonEv", "local wireless (coop / cut): 0", int, h_ldn_DiscReason, void) { COOP(coop_ldn_disconnect_reason(c_)); return 0; }
+-HLE_FORCE("_ZN2nn3ldn20AddAcceptFilterEntryENS0_10MacAddressE", "local wireless (coop / cut)", Result, h_ldn_Filter, uint64_t mac) { (void)mac; return RES_FAIL; }
++HLE_FORCE("_ZN2nn3ldn19GetDisconnectReasonEv", "local wireless (coop / cut): 0", int, h_ldn_DiscReason, void) { COOPV(coop_ldn_disconnect_reason(c_)); return 0; }
++// The accept filter (a host that lets in listed consoles only) is not kept: with co-op on every call succeeds and anyone with the room code may join
++HLE_FORCE("_ZN2nn3ldn20AddAcceptFilterEntryENS0_10MacAddressE", "local wireless accept filter (coop: not kept, succeeds / cut)", Result, h_ldn_Filter, uint64_t mac) { (void)mac; return dm_coop() ? RES_OK : RES_FAIL; }
++HLE_FORCE("_ZN2nn3ldn20AddAcceptFilterEntryERKNS0_8NodeInfoE", "local wireless accept filter (coop: not kept, succeeds / cut)", Result, h_ldn_FilterNode, const void *node) { (void)node; return dm_coop() ? RES_OK : RES_FAIL; }
++HLE_FORCE("_ZN2nn3ldn17ClearAcceptFilterEv", "local wireless accept filter (coop: succeeds / cut)", Result, h_ldn_FilterClear, void) { return dm_coop() ? RES_OK : RES_FAIL; }
++// Which controllers stay usable while local wireless runs (a console's radio is shared with them): the host's controllers are not on that radio, so there is nothing to restrict
++HLE_FORCE("_ZN2nn3ldn32SetWirelessControllerRestrictionENS0_29WirelessControllerRestrictionE", "local wireless controller restriction (coop: nothing to restrict, succeeds / cut)", Result, h_ldn_CtrlRestrict, int on) {
++    if (dm_coop()) { static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("[coop] ldn: SetWirelessControllerRestriction(%d): nothing to restrict here", on); return RES_OK; }
++    return RES_FAIL;
++}
+ HLE_FORCE("_ZN2nn3ldn22SetStationAcceptPolicyENS0_12AcceptPolicyE", "local wireless (coop / cut)", Result, h_ldn_Policy, int p) { COOP(coop_ldn_set_accept_policy(c_, p & 0xFF)); (void)p; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn6RejectENS0_11Ipv4AddressE", "local wireless (coop / cut)", Result, h_ldn_Reject, uint32_t a) { COOP(coop_ldn_reject(c_, a)); (void)a; return RES_FAIL; }
+ HLE_FORCE("_ZN2nn3ldn16GetNetworkConfigEPNS0_13NetworkConfigE", "local wireless (coop / cut)", Result, h_ldn_NetCfg, void *o) { COOP(coop_ldn_network_config(c_, o)); (void)o; return RES_FAIL; }
+@@ -210,7 +230,15 @@ HLE_FORCE("_ZN2nn3ngc46MaskProfanityWordsInTextForPlatformRegionChinaEPc", "Chin
+ 
+ // ---------- err: error display applet. Only logged, no UI is shown ----------
+ HLE_FORCE("_ZN2nn3err9ShowErrorENS0_9ErrorCodeE", "error display applet; the host only logs it", void, h_err_ShowCode, uint64_t code) { DM_APPLET("error"); LOG("game asks to show an error: %04u-%04u", (unsigned)(code & 0xffffffff), (unsigned)(code >> 32)); }
+-HLE_FORCE("_ZN2nn3err9ShowErrorERKNS0_18ErrorResultVariantE", "error display applet; the host only logs it", void, h_err_ShowVar, const void *v) { DM_APPLET("error"); (void)v; LOG("game asks to show an error (ErrorResultVariant)"); }
++HLE_FORCE("_ZN2nn3err9ShowErrorERKNS0_18ErrorResultVariantE", "error display applet; the host only logs it", void, h_err_ShowVar, const void *v) {
++    DM_APPLET("error");
++    // {u8 state (1: a Result, 2: an error code); the Result at +4, or the error code's category and number at +4 and +8}: the code says which service failed
++    const uint8_t *b = v; uint32_t w1, w2; memcpy(&w1, b + 4, 4); memcpy(&w2, b + 8, 4);
++    module_t *m = module_of(__builtin_return_address(0)); char at[48];
++    if (m) snprintf(at, sizeof at, "%s+%#llx", m->name, (unsigned long long)((uint8_t *)__builtin_return_address(0) - m->base)); else snprintf(at, sizeof at, "?");
++    if (b[0] == 1) LOG("game asks to show an error (ErrorResultVariant): Result %#x (%04u-%04u), from %s", w1, 2000 + (w1 & 0x1ff), w1 >> 9 & 0x1fff, at);
++    else LOG("game asks to show an error (ErrorResultVariant): state %u, %08x %08x (%04u-%04u), from %s", b[0], w1, w2, w1, w2, at);
++}
+ HLE_FORCE("_ZN2nn3err40ShowUnacceptableAddOnContentVersionErrorEv", "add-on content version mismatch error applet; the host only logs it", void, h_err_AocVer, void) { DM_APPLET("error"); LOG("game asks to show an error: add-on content version mismatch"); }
+ HLE_FORCE("_ZN2nn3err39ShowUnacceptableApplicationVersionErrorEv", "game version mismatch error applet; the host only logs it", void, h_err_AppVer, void) { DM_APPLET("error"); LOG("game asks to show an error: game version mismatch"); }
+ // Pokémon Legends: Z-A (SDK 19): the application's own error screen (an error code number and two messages in the argument) goes through the error applet as well

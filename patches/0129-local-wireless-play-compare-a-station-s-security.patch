@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: exynos6694 <azsx6694@naver.com>
+Date: Wed, 11 Nov 2026 00:42:08 +0900
+Subject: [PATCH] Local wireless play: compare a station's SecurityConfig as
+ nn::ldn does (mode and passphrase)
+
+Animal Crossing: New Horizons 3.0.3 found the host's island, but every Connect came back 0x86cb
+(ConnectionRejected): the host compared an FNV hash of the station's whole 0x44-byte SecurityConfig with
+its own, and the bytes past PassphraseSize are whatever each game's buffer held. Only the mode and the
+first PassphraseSize bytes count now (sec_hash), on both sides. A refused join says why in the host's log
+(SecurityConfig, or an accept policy that rejects everyone), and SetStationAcceptPolicy logs its value.
+t_coop_loop connects with other bytes past the passphrase.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: pending
+Reason: Local wireless play: SecurityConfig compared by mode and passphrase (Animal Crossing's Connect)
+Issue: none yet (exynos6694/NX2Apple-muti feature/local-wireless)
+---
+ dm/host/hle_coop_ldn.c      | 17 ++++++++++++++---
+ dm/host/tests/t_coop_loop.c |  4 +++-
+ 2 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/dm/host/hle_coop_ldn.c b/dm/host/hle_coop_ldn.c
+index 0c0e549..68039ad 100644
+--- a/dm/host/hle_coop_ldn.c
++++ b/dm/host/hle_coop_ldn.c
+@@ -37,6 +37,15 @@ static uint64_t fnv64(const void *p, size_t n) {
+     for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
+     return h;
+ }
++// SecurityConfig {u16 SecurityMode, u16 PassphraseSize, u8 Passphrase[64]}: what nn::ldn compares is the mode and the first PassphraseSize bytes.
++// The bytes past the size are whatever the game's buffer held (Animal Crossing: New Horizons 3.0.3's host and visitor differ there), so they stay
++// out of the hash a station's join is checked against
++static uint64_t sec_hash(const void *sec) {
++    const uint8_t *s = sec; uint8_t b[0x44] = {0};
++    unsigned len = get16(s + 2); if (len > 64) len = 64;
++    memcpy(b, s, 4); memcpy(b + 4, s + 4, len);
++    return fnv64(b, 0x44);
++}
+ void cldn_name(char *out, const uint8_t *p, size_t n) {   // up to n bytes to the first NUL, control bytes as '?'
+     size_t k = 0;
+     for (; k < n && p[k]; k++) out[k] = p[k] < 0x20 || p[k] == 0x7F ? '?' : (char)p[k];
+@@ -329,7 +338,8 @@ static void host_teardown(coop_node *n, int reason) {   // the network ends: eve
+ }
+ uint32_t cldn_host_join(coop_node *n, conn *c, const uint8_t *netid, const uint8_t *user, uint16_t lcv, uint64_t sec_hash, const char *build, uint64_t mods) {
+     if (n->ls != COOP_LS_AP_CREATED || memcmp(netid, n->info, 0x20)) return COOP_LDN_CONNECT_NOT_FOUND;
+-    if (sec_hash != n->sec_hash || n->policy == 1) return COOP_LDN_CONNECT_REJECTED;
++    if (sec_hash != n->sec_hash) { coop_logf(n, "ldn: a station's SecurityConfig (mode and passphrase) differs from this network's: refused"); return COOP_LDN_CONNECT_REJECTED; }
++    if (n->policy == 1) { coop_logf(n, "ldn: the game's accept policy rejects every station: refused"); return COOP_LDN_CONNECT_REJECTED; }
+     if (lcv < n->self_lcv) return COOP_LDN_VERSION_TOO_LOW;
+     if (lcv > n->self_lcv) return COOP_LDN_VERSION_TOO_HIGH;
+     if (n->build[0] && build[0] && strncmp(n->build, build, 16)) {
+@@ -410,7 +420,7 @@ uint32_t coop_ldn_create_network(coop_node *n, const void *netcfg, const void *s
+     if (n->cfg.role != COOP_ROLE_JOIN && cmp_host_open(n)) { cnode_unlock(n); return COOP_LDN_DEVICE_DISABLED; }   // nothing can reach a network nobody listens for
+     memcpy(n->netcfg, cf, 0x20); memcpy(n->user, user, 0x30);
+     if (n->cfg.lcid && get64(n->netcfg) == ~0ull) put64(n->netcfg, n->cfg.lcid);
+-    n->sec_mode = get16(sec); n->sec_hash = fnv64(sec, 0x44);   // the passphrase is compared as a hash and never leaves the node
++    n->sec_mode = get16(sec); n->sec_hash = sec_hash(sec);   // the passphrase is compared as a hash and never leaves the node
+     cplat_random(n->session, 16); cplat_random(n->server_random, 16); cplat_random(&n->challenge, 8);
+     n->subnet = VIP_PREFIX | (uint32_t)(1 + n->session[0] % 254) << 8;
+     n->self = 0; n->self_lcv = get16(cf + 0x14);
+@@ -541,7 +551,7 @@ uint32_t coop_ldn_connect(coop_node *n, const void *info, const void *sec, const
+     if (n->cfg.lcid && get64(m) == ~0ull) put64(m, n->cfg.lcid);
+     memcpy(m + 0x20, user, 0x30);
+     put16(m + 0x50, (uint32_t)version);
+-    put64(m + 0x52, fnv64(sec, 0x44));
++    put64(m + 0x52, sec_hash(sec));
+     memset(m + 0x5A, 0, 16); memcpy(m + 0x5A, n->build, strlen(n->build)); put64(m + 0x6A, n->mods);
+     n->join_wait = 1; n->join_done = 0; n->join_result = COOP_LDN_CONNECT_TIMEOUT; n->join_peer = (int)(p - n->pr);
+     cmp_send_frame(n, &p->c, M_JOIN, m, sizeof m);
+@@ -618,6 +628,7 @@ int coop_ldn_disconnect_reason(coop_node *n) { cnode_lock(n); int r = n->reason;
+ uint32_t coop_ldn_set_accept_policy(coop_node *n, int policy) {
+     if (policy < 0 || policy > 3) return COOP_LDN_INVALID_ARGUMENT;
+     cnode_lock(n);
++    if (policy != n->policy) coop_logf(n, "ldn: SetStationAcceptPolicy(%d)%s", policy, policy == 1 ? ": stations are refused" : policy == 3 ? ": the accept filter (not kept) would decide" : "");
+     if (n->ls != COOP_LS_AP && n->ls != COOP_LS_AP_CREATED) { cnode_unlock(n); return COOP_LDN_INVALID_STATE; }
+     n->policy = policy;
+     if (n->ls == COOP_LS_AP_CREATED) { cldn_host_rebuild(n); cmp_host_sync(n); cldn_notify(n); }
+diff --git a/dm/host/tests/t_coop_loop.c b/dm/host/tests/t_coop_loop.c
+index b9e545e..de1710f 100644
+--- a/dm/host/tests/t_coop_loop.c
++++ b/dm/host/tests/t_coop_loop.c
+@@ -44,7 +44,9 @@ static void run(int inet) {
+         CHECK(!memcmp(infos[0] + 0x50 + 0x21C, "island-adv", 10), "advertise data carried");
+         CHECK(infos[0][0x50 + 0x18 + 0x2D] == 0, "platform 0 (Switch 1)");
+         uint8_t su[0x30] = {0}; strcpy((char *)su, "Visitor");
+-        uint32_t r = coop_ldn_connect(s, infos[0], sec, su, 3, 0);
++        // the station's SecurityConfig: the same mode and passphrase, other bytes past PassphraseSize (Animal Crossing's visitor and host differ there)
++        uint8_t ssec[0x44]; memset(ssec, 0xA5, sizeof ssec); put16(ssec, 1); put16(ssec + 2, 0);
++        uint32_t r = coop_ldn_connect(s, infos[0], ssec, su, 3, 0);
+         CHECK(r == 0, "connect %#x", r);
+         CHECK(coop_ldn_state(s) == COOP_LS_STATION_CONNECTED, "station connected");
+         usleep(300000);

@@ -112,6 +112,8 @@ class Rows(unittest.TestCase):
         self.assertIsNone(bf.classify(fixture('disk.full')['text']).detail)
         log = 'skipping an empty file: a.nsp\n' + fixture('games.noTitleID')['text'] + '\n'
         self.assertEqual(bf.classify(log).detail, fixture('games.noTitleID')['folder'])
+        stale = bf.classify(fixture('profile.stale')['text'])   # #553: a kept profile that lacks the selected update stops the build
+        self.assertEqual((stale.kind, stale.detail), (bf.STALE_PROFILE, fixture('profile.stale')['folder']))
 
     def test_offline_pipelines_explain_low_space_and_keep_the_engine_estimate(self):
         for pid, gb in (('pso.low', '3'), ('pso.merge', '2.5'), ('pso.failed', None)):
@@ -155,9 +157,9 @@ class Rows(unittest.TestCase):
 
     def test_the_python_probe_and_the_venv_install_name_zbic(self):
         pkg = ROOT / 'frontend-qt/nspb_qt'
-        self.assertIn('import lz4, capstone, fontTools, zbic', (pkg / 'platform_util.py').read_text(encoding='utf-8'))
+        self.assertIn('import lz4, capstone, fontTools, zbic, unicorn', (pkg / 'platform_util.py').read_text(encoding='utf-8'))
         model = (pkg / 'model.py').read_text(encoding='utf-8')
-        self.assertIn("pkgs = ['lz4', 'capstone', 'fonttools', 'zbic', 'nsz']", model)
+        self.assertIn("pkgs = ['lz4', 'capstone', 'unicorn', 'fonttools', 'zbic', 'nsz']", model)
         self.assertIn("'zbic', 'backports.zstd', 'nsz'", model)
 
     @unittest.skipIf(importlib.util.find_spec('PySide6') is None, 'PySide6 is not installed')
