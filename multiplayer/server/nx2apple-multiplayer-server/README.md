@@ -2,7 +2,7 @@
 
 This module holds two programs:
 
-- `cmd/coop-relay`: the relay for internet play. It works today with patch 0123 (`DM_COOP`). See "Internet play through coop-relay" below.
+- `cmd/coop-relay`: the relay for internet play. It works today with patch 0124 (`DM_COOP`). See "Internet play through coop-relay" below.
 - `cmd/server`: a directory and signaling prototype for later (automatic matching, UDP hole punching). The engine does not talk to it yet.
 
 ## Internet play through coop-relay
@@ -19,7 +19,7 @@ everybody connects out to the relay, nobody forwards a port, and it works behind
 
 ### Players
 
-Nothing to set up. The launcher's "Local wireless play" switch (`DM_COOP=auto`) plays through the built-in relay (patch 0124,
+Nothing to set up. The launcher's "Local wireless play" switch (`DM_COOP=auto`) plays through the built-in relay (patch 0125,
 `COOP_RELAY_BUILTIN` in `coop.h`: 158.180.89.88:47610) in one room per game, derived from the title ID (`coop_room_for_title`). Then
 play as on a LAN: the host invites, the visitor looks for a local connection. The same main build and the same cheats are required on
 every side, and one player at a time can host each game.
@@ -28,7 +28,7 @@ Overrides, in `env.txt` (Mac: `~/Library/Application Support/nxnative/<title id>
 
 - `DM_COOP_ROOM=XXXX-XXXX-XXXX-XXXX`: a private room, the same code on every side.
 - `DM_COOP_RELAY=<IPv4>[:<port>]`: another relay.
-- `DM_COOP_INTERNET=0`: this Wi-Fi only (DNS-SD, no server), as before patch 0124.
+- `DM_COOP_INTERNET=0`: this Wi-Fi only (DNS-SD, no server), as before patch 0125.
 
 ### The server
 
